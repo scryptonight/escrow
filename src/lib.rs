@@ -1,11 +1,19 @@
+//!
+//!
+//! Note use of TokenQuantity introduecs a possible cost unit limit
+//! problem when the IndexSet inside gets large. The current
+//! implementation is suitable for a moderate number of
+//! nonfungible-ids in that set, but not very many.
+
+
 use scrypto::prelude::*;
 
 pub mod util;
-pub mod asking_type;
+pub mod token_quantity;
 
 use radix_engine_common::ManifestSbor;
-use util::unix_time_now;
-use asking_type::AskingType;
+use util::{unix_time_now, length_of_option_set, proof_to_nfgid};
+use token_quantity::TokenQuantity;
 
 #[derive(ScryptoSbor, ManifestSbor)]
 pub enum AllowanceLifeCycle {
@@ -18,14 +26,14 @@ pub enum AllowanceLifeCycle {
 
     /// The allowance can be used any number of times, each time for
     /// up to `max_amount` tokens. It cannot be used more frequently
-    /// than once every `min_delay` seconds. If set to zero it will
-    /// still prevent multiple uses within the same "second".
+    /// than once every `min_delay` seconds. If this is set to zero it
+    /// will still prevent multiple uses within the same "second".
     ///
     /// Note that if this is set to `None` the allowance can be used
     /// multiple times per "second" and even multiple times in the
     /// same transaction manifest.
     ///
-    /// Also note that the ledger has a maximum clock accuracy that
+    /// Also note that the ledger has a maximum clock accuracy which
     /// means that the preceding "per second" may actually be per
     /// minute.
     ///
@@ -37,6 +45,16 @@ pub enum AllowanceLifeCycle {
 /// An Allowance NFT allows its owner to extract some amount of tokens
 /// from a pool. It is issued by the pool's owner, or it can be
 /// returned to a depositor that is trusted by the pool owner.
+///
+/// Note that in the current implementation the owner of the pool is
+/// able to recall any Allowance NFT issued for that pool. This may be
+/// undesirable for some use cases, e.g. if you're selling an
+/// Allowance to someone then they may want to have guarantees that it
+/// won't be arbitrarily recalled before they use it. This component
+/// should be fairly easy to modify to cover such use cases, e.g. by
+/// having a configuration option or function parameter controlled by
+/// the owner that allows the creation of non-recallable Allowance
+/// NFTs.
 #[derive(ScryptoSbor, NonFungibleData)]
 pub struct AllowanceNfData {
     /// The Escrow pool this allowance is associated with.
@@ -61,16 +79,9 @@ pub struct AllowanceNfData {
     /// The resource this allowance is for.
     pub for_resource: ResourceAddress,
 
-    /// The amount of this resource that can be taken. Note that this
-    /// is a meaningful limitation whether `for_resource` is fungible
-    /// *or* non-fungible.
+    /// The amount of this resource that can be taken.
     #[mutable]
-    pub max_amount: Option<Decimal>,
-
-    // When Scrypto gives us a lazy-loading BTreeSet implementation we
-    // may add this:
-    // #[mutable]
-    // allow_nflids: LazyBTreeSet<NonFungibleLocalId>,
+    pub max_amount: Option<TokenQuantity>,
 }
 
 #[derive(ScryptoSbor)]
@@ -92,17 +103,22 @@ mod escrow {
     impl Escrow {
         pub fn instantiate_escrow() -> Global<Escrow>
         {
-            let addr =
-                Self {
-                    pools: KeyValueStore::new(),
-                }
+            Self {
+                pools: KeyValueStore::new(),
+            }
             .instantiate()
                 .prepare_to_globalize(OwnerRole::None)
-                .globalize();
-
-            addr
+                .globalize()
         }
 
+        /// Anyone can deposit funds into any escrow pool.
+        ///
+        /// The `funds` are deposited into the pool owned by `owner`.
+        ///
+        /// If the depositor provides a proof `allowance_requestor`
+        /// showing that they are a trusted agent they will receive
+        /// back an Allowance to withdraw the amount that they
+        /// deposited in this call.
         pub fn deposit_funds(&mut self,
                              owner: NonFungibleGlobalId,
                              funds: Bucket,
@@ -136,6 +152,14 @@ mod escrow {
                                 requestor.resource_address(),
                                 requestor.as_non_fungible().non_fungible_local_id())),
                         "only trusted can request allowance");
+                let max_amount =
+                    if funds.resource_address().is_fungible() {
+                        TokenQuantity::Fungible(funds.amount())
+                    } else {
+                        TokenQuantity::NonFungible(
+                            Some(funds.as_non_fungible().non_fungible_local_ids()),
+                            None)
+                    };
                 let pool_mgr = ResourceManager::from(
                     self.get_or_add_pool(&owner_nfgid).allowance_badge_res);
                 Some(self.create_allowance(
@@ -145,7 +169,7 @@ mod escrow {
                     0,
                     AllowanceLifeCycle::Accumulating,
                     funds.resource_address(),
-                    Some(funds.amount())))
+                    Some(max_amount)))
             };
             
             // Pool the funds
@@ -172,138 +196,99 @@ mod escrow {
             Decimal::ZERO
         }
 
+        /// The pool owner can use this function to withdraw funds
+        /// from their pool. `caller` must be a proof of the pool
+        /// owner.
+        ///
+        /// If the requested tokens aren't available we will panic.
         pub fn withdraw(&mut self,
                         caller: Proof,
                         resource: ResourceAddress,
-                        amount: Decimal) -> Bucket
+                        quantity: TokenQuantity) -> Bucket
         {
+            let (take_nflids, take_amount) = quantity.extract_max_values();
             self.operate_on_vault(&self.proof_to_nfgid(caller),
                                   &resource,
                                   None,
-                                  |mut v| Some(v.take(amount)))
+                                  |mut v| {
+                                      let mut bucket: Option<Bucket> = None;
+
+                                      // First take the named nflids: if we do this the
+                                      // other way around they may no longer be
+                                      // available when we try.
+                                      if let Some(nflids) = &take_nflids {
+                                          bucket = Some(v.as_non_fungible().take_non_fungibles(&nflids).into());
+                                      }
+                                      // Then take the necessary amount of arbitrary tokens.
+                                      if let Some(amount) = take_amount {
+                                          if let Some(ref mut bucket) = bucket {
+                                              bucket.put(v.take(amount));
+                                          } else {
+                                              bucket = Some(v.take(amount));
+                                          }
+                                      }
+                                      bucket
+                                  })
                 .unwrap()
         }
 
+        /// Someone who (typically) isn't the owner of a pool can
+        /// withdraw from it if they can provide an appropriate
+        /// Allowance NFT supporting that withdrawal.
+        ///
+        /// The `allowance` is supplied in a Bucket so that we can
+        /// burn it if it's now spent. For this reason it may or may
+        /// not be returned back to the caller, and its authorization
+        /// details may have changed if it *is* returned.
         pub fn withdraw_with_allowance(&mut self,
                                        allowance: Bucket,
-                                       amount: Decimal)
+                                       quantity: TokenQuantity)
                                        -> (Bucket, Option<Bucket>)
         {
             let allowance_resaddr = allowance.resource_address();
             let (owner_nfgid, withdraw_resource, allowance) =
-                self.use_allowance(allowance, amount);
+                self.use_allowance(allowance, quantity.clone());
 
             // Note the allowance NFT may have been burned by this
             // point
 
-            (self.operate_on_vault(
-                &owner_nfgid,
-                &withdraw_resource,
-                Some(allowance_resaddr),
-                |mut v| Some(v.take(amount)))
-             .unwrap(),
-             allowance)
-        }
-
-        /// NOTE we do *not* check that the allowance has the correct
-        /// resource address for the pool as we have no information on
-        /// the pool. This must be checked by the calling party.
-        fn use_allowance(&self, allowance: Bucket, amount: Decimal)
-                         -> (NonFungibleGlobalId, ResourceAddress, Option<Bucket>)
-        {
-            let nfdata: AllowanceNfData =
-                ResourceManager::from(allowance.resource_address())
-                .get_non_fungible_data(
-                    &allowance.as_non_fungible().non_fungible_local_id());
-
-            let owner_nfgid = nfdata.escrow_pool.1;
-            let withdraw_resource = nfdata.for_resource;
-            let mut burn = false;
-
-            assert_eq!(Runtime::global_address(), nfdata.escrow_pool.0,
-                       "allowance is not for this escrow");
-            assert!(nfdata.max_amount.is_none()
-                    || nfdata.max_amount.unwrap() >= amount,
-                    "insufficient allowance");
-
-            let now = unix_time_now();
-            assert!(nfdata.valid_after <= now,
-                    "allowance not yet valid");
-            assert!(nfdata.valid_until.is_none()
-                    || nfdata.valid_until.unwrap() >= now,
-                    "allowance no longer valid");
-
-            match nfdata.life_cycle {
-                AllowanceLifeCycle::OneOff => {
-                    burn = true;
-                },
-                AllowanceLifeCycle::Accumulating => {
-                    let new_max = nfdata.max_amount.unwrap() - amount;
-                    if new_max.is_zero() { burn = true }
-                    else {
-                        ResourceManager::from(allowance.resource_address())
-                            .update_non_fungible_data(
-                                &allowance.as_non_fungible().non_fungible_local_id(),
-                                "max_amount",
-                                Some(new_max));
-                    }
-                },
-                AllowanceLifeCycle::Repeating{min_delay} => {
-                    if let Some(min_delay) = min_delay {
-                        ResourceManager::from(allowance.resource_address())
-                            .update_non_fungible_data(
-                                &allowance.as_non_fungible().non_fungible_local_id(),
-                                "valid_after",
-                                now + min_delay);
-                    }
-                }
-            }
-
-            // Burn the allowance NFT if it's now spent
-            let mut allowance = Some(allowance);
-            if burn {
-                allowance.unwrap().burn();
-                allowance = None;
-            }
+            let (take_nflids, take_amount) = quantity.extract_max_values();
             
-            (owner_nfgid, withdraw_resource, allowance)
-        }
-
-        pub fn withdraw_non_fungibles(&mut self,
-                                      caller: Proof,
-                                      resource: ResourceAddress,
-                                      lids: IndexSet<NonFungibleLocalId>)
-                                      -> Bucket
-        {
-            self.operate_on_vault(&self.proof_to_nfgid(caller),
-                                  &resource,
-                                  None,
-                                  |v| Some(v.as_non_fungible().take_non_fungibles(&lids).into()))
-                .unwrap()
-        }
-
-        pub fn withdraw_non_fungibles_with_allowance(
-            &mut self,
-            allowance: Bucket,
-            lids: IndexSet<NonFungibleLocalId>)
-            -> (Bucket, Option<Bucket>)
-        {
-            let allowance_resaddr = allowance.resource_address();
-            let (owner_nfgid, withdraw_resource, allowance) =
-                self.use_allowance(allowance, lids.len().into());
-
-            // Note the allowance NFT may have been burned by this
-            // point
-
             (self.operate_on_vault(
                 &owner_nfgid,
                 &withdraw_resource,
                 Some(allowance_resaddr),
-                |v| Some(v.as_non_fungible().take_non_fungibles(&lids).into()))
+                |mut v| {
+                    let mut bucket: Option<Bucket> = None;
+
+                    // First take the named nflids: if we do this the
+                    // other way around they may no longer be
+                    // available when we try.
+                    if let Some(nflids) = &take_nflids {
+                        bucket = Some(v.as_non_fungible().take_non_fungibles(&nflids).into());
+                    }
+                    // Then take the necessary amount of arbitrary tokens.
+                    if let Some(amount) = take_amount {
+                        if let Some(ref mut bucket) = bucket {
+                            bucket.put(v.take(amount));
+                        } else {
+                            bucket = Some(v.take(amount));
+                        }
+                    }
+                    bucket
+                })
              .unwrap(),
              allowance)
         }
 
+        /// The owner of a pool can call this convenience method to
+        /// withdraw all tokens of a given resource. Note that this
+        /// may panic on exceeding cost unit limits if you're trying
+        /// withdraw a large number of non-fungible tokens. In this
+        /// case do a more controlled withdrawal of smaller sets of
+        /// non-fungibles instead.
+        ///
+        /// The `caller` must be a proof of the pool owner.
         pub fn withdraw_all_of(&mut self,
                                caller: Proof,
                                resource: ResourceAddress)
@@ -316,6 +301,10 @@ mod escrow {
                 .unwrap()
         }
 
+        /// The owner of a pool can pull XRD from their pool to lock
+        /// fees for the current transaction.
+        ///
+        /// The `caller` must be a proof of the pool owner.
         pub fn subsidize(&mut self,
                          caller: Proof,
                          amount: Decimal)
@@ -326,13 +315,20 @@ mod escrow {
                                   |v| {v.as_fungible().lock_fee(amount); None});
         }
 
+        /// A holder of an Allowance for XRD can pull XRD from the
+        /// pool to lock fees for the current transaction.
+        ///
+        /// The `caller` must be a proof of the pool owner.
+        ///
+        /// Note that the Allowance may get burned during execution
+        /// and if so will not be returned to the caller.
         pub fn subsidize_with_allowance(&mut self,
                          allowance: Bucket,
                          amount: Decimal) -> Option<Bucket>
         {
             let allowance_resaddr = allowance.resource_address();
             let (owner_nfgid, withdraw_resource, allowance) =
-                self.use_allowance(allowance, amount);
+                self.use_allowance(allowance, TokenQuantity::Fungible(amount));
 
             // Note the allowance NFT may have been burned by this
             // point
@@ -348,6 +344,10 @@ mod escrow {
             allowance
         }
 
+        /// The owner of a pool can pull XRD from their pool to lock
+        /// contingent fees for the current transaction.
+        ///
+        /// The `caller` must be a proof of the pool owner.
         pub fn subsidize_contingent(&mut self,
                                     caller: Proof,
                                     amount: Decimal)
@@ -375,19 +375,21 @@ mod escrow {
                               valid_after: i64,
                               life_cycle: AllowanceLifeCycle,
                               for_resource: ResourceAddress,
-                              max_amount: Option<Decimal>) -> Bucket
+                              max_quantity: Option<TokenQuantity>) -> Bucket
         {
-            assert!(max_amount.is_none()
-                    || !max_amount.unwrap().is_negative(),
-                    "max_amount cannot be negative");
+            if let Some(max_quantity) = &max_quantity {
+                let amount;
+                match max_quantity {
+                    TokenQuantity::NonFungible(_, max_amount) => { amount = max_amount.map(|v|Decimal::from(v)) },
+                    TokenQuantity::Fungible(max_amount) => { amount = Some(*max_amount) },
+                }
+                assert!(!amount.unwrap_or_default().is_negative(),
+                        "max_amount cannot be negative");
+            }
 
             // Access control is effectively enforced through our pool
             // lookup further down.
-            let owner = owner.skip_checking();
-
-            let owner = NonFungibleGlobalId::new(
-                owner.resource_address(),
-                owner.as_non_fungible().non_fungible_local_id());
+            let owner = self.proof_to_nfgid(owner);
 
             let pool_mgr = ResourceManager::from(
                 self.get_or_add_pool(&owner).allowance_badge_res);
@@ -399,7 +401,7 @@ mod escrow {
                 valid_after,
                 life_cycle,
                 for_resource,
-                max_amount)
+                max_quantity)
         }
 
         /// Anyone who holds an `allowance` NFT can voluntarily reduce
@@ -409,12 +411,16 @@ mod escrow {
         /// Make sure that `new_max` is lower than (or equal to) the
         /// `max_amount` currently in the allowance or this method
         /// will panic. Also don't send in a negative number.
-        pub fn reduce_allowance(&self,
-                                allowance: Proof,
-                                new_max: Decimal)
+        ///
+        /// On a NonFungible type allowance this only reduces the
+        /// numerical amount, never the set of nflids available if
+        /// any.
+        pub fn reduce_allowance_to_amount(&self,
+                                          allowance: Proof,
+                                          new_max: Decimal)
         {
             assert!(!new_max.is_negative(),
-                    "allowance can't be negative");
+                    "2003 allowance can't be negative");
             
             // Access control is effectively achieved through the
             // use of the proof's resource address and nflid later.
@@ -424,16 +430,98 @@ mod escrow {
                 ResourceManager::from(allowance.resource_address())
                 .get_non_fungible_data(&allowance.as_non_fungible().non_fungible_local_id());
 
-            assert!(nfdata.max_amount.is_none()
-                    || nfdata.max_amount.unwrap() >= new_max,
-                    "allowance increase not allowed");
+            let new_token_quantity: TokenQuantity;
+
+            if let Some(max_amount) = nfdata.max_amount {
+                match max_amount {
+                    TokenQuantity::Fungible(amount) => {
+                        assert!(amount >= new_max, "2000 allowance increase not allowed");
+                        new_token_quantity = TokenQuantity::Fungible(new_max);
+                    },
+                    // TODO test cost unit limits on nflids
+                    TokenQuantity::NonFungible(nflids, amount) => {
+                        if let Some(amount) = amount {
+                            assert!(new_max < amount.into(),
+                                    "2001 allowance increase not allowed");
+                            new_token_quantity = TokenQuantity::NonFungible(
+                                nflids,
+                                Some(u64::try_from(new_max).expect(
+                                    "2004 new_max must be a whole number")));
+                        } else {
+                            panic!("2002 allowance increase not allowed");
+                        }
+                    },
+                }
+            } else {
+                new_token_quantity = TokenQuantity::Fungible(new_max);
+            }
 
             ResourceManager::from(allowance.resource_address())
                 .update_non_fungible_data(&allowance.as_non_fungible().non_fungible_local_id(),
                                           "max_amount",
-                                          Some(new_max));
+                                          Some(new_token_quantity));
         }
 
+        /// Anyone who holds an `allowance` NFT of NonFungible type
+        /// can voluntarily reduce its availeble nflids by calling
+        /// this method. Just provide a proof that you control the
+        /// allowance and you're good.
+        ///
+        /// Any nflids you specify in `to_remove` will be removed from
+        /// your list of available ones. If you specify more nflids
+        /// than are actually in the Allowance those nflids are just
+        /// ignored in our processing of them.
+        ///
+        /// On a NonFungible type allowance this only reduces the
+        /// nflids set, never the additional fixed amount.
+        ///
+        /// This method will panic if you try to call it on a Fungible
+        /// allowance, or if your allowance doesn't currently have an
+        /// nflids set defined.
+        pub fn reduce_allowance_by_nflids(&self,
+                                          allowance: Proof,
+                                          to_remove: IndexSet<NonFungibleLocalId>)
+        {
+            // Access control is effectively achieved through the use
+            // of the proof's resource address and nflid when
+            // retrieving nfdata below.
+            let allowance = allowance.skip_checking();
+
+            let nfdata: AllowanceNfData =
+                ResourceManager::from(allowance.resource_address())
+                .get_non_fungible_data(&allowance.as_non_fungible().non_fungible_local_id());
+
+            let new_token_quantity: TokenQuantity;
+
+            if let Some(max_amount) = nfdata.max_amount {
+                match max_amount {
+                    TokenQuantity::Fungible(..) => {
+                        panic!("2005 use reduce_allowance_to_amount for Fungible allowance");
+                    },
+                    TokenQuantity::NonFungible(nflids, amount) => {
+                        if let Some(nflids) = nflids {
+                            let new_nflids = Some(nflids.difference(&to_remove).cloned().collect());
+                            new_token_quantity = TokenQuantity::NonFungible(
+                                new_nflids,
+                                amount);
+                        } else {
+                            panic!("2006 no nflids to remove from");
+                        }
+                    },
+                }
+            } else {
+                panic!("2007 no nflids to remove from");
+            }
+
+            ResourceManager::from(allowance.resource_address())
+                .update_non_fungible_data(&allowance.as_non_fungible().non_fungible_local_id(),
+                                          "max_amount",
+                                          Some(new_token_quantity));
+        }
+
+        /// The pool owner can add a non-fungible global id that is
+        /// trusted to receive automatically generated Allowances when
+        /// calling deposit_funds.
         pub fn add_trusted_nfgid(&mut self,
                                  owner: Proof,
                                  add_nfgid: NonFungibleGlobalId)
@@ -443,6 +531,9 @@ mod escrow {
             pool.trusted_nfgids.insert(add_nfgid, true);
         }
 
+        /// The pool owner can remove a non-fungible global id from
+        /// those trusted to receive automatically generated
+        /// Allowances when calling deposit_funds.
         pub fn remove_trusted_nfgid(&mut self,
                                     owner: Proof,
                                     remove_nfgid: NonFungibleGlobalId)
@@ -452,6 +543,9 @@ mod escrow {
             pool.trusted_nfgids.insert(remove_nfgid, false);
         }
 
+        /// Determines if a given non-fungible global id is currently
+        /// trusted to receive automatically generated Allowances when
+        /// calling deposit_funds.
         pub fn is_nfgid_trusted(&self,
                                 owner: NonFungibleGlobalId,
                                 candidate: NonFungibleGlobalId) -> bool
@@ -463,6 +557,9 @@ mod escrow {
             }
         }
 
+        /// The pool owner can add an entire resource, all tokens of
+        /// which are trusted to receive automatically generated
+        /// Allowances when calling deposit_funds.
         pub fn add_trusted_resource(&mut self,
                                     owner: Proof,
                                     add_resource: ResourceAddress)
@@ -472,6 +569,9 @@ mod escrow {
             pool.trusted_res.insert(add_resource, true);
         }
 
+        /// The pool owner can remove a resource from those which are
+        /// trusted to receive automatically generated Allowances when
+        /// calling deposit_funds.
         pub fn remove_trusted_resource(&mut self,
                                        owner: Proof,
                                        remove_resource: ResourceAddress)
@@ -481,6 +581,9 @@ mod escrow {
             pool.trusted_res.insert(remove_resource, false);
         }
         
+        /// Determines if a given resource is currently trusted to
+        /// receive automatically generated Allowances when calling
+        /// deposit_funds.
         pub fn is_resource_trusted(&self,
                                    owner: NonFungibleGlobalId,
                                    candidate: ResourceAddress) -> bool
@@ -496,6 +599,146 @@ mod escrow {
         // Internal helper methods follow
         //
         
+        /// Expends an allowance (or part of it) by checking that it
+        /// is currently able to support the withdrawal indicated, and
+        /// updating the allowance to reflect such a withdrawal having
+        /// taken place. This potentially burns the allowance so after
+        /// calling this function it could be gone.
+        ///
+        /// This function does not do the actual withdrawing, the
+        /// caller has to see to that.
+        ///
+        /// NOTE we do *not* check that the allowance has the correct
+        /// resource address for the pool as we have no information on
+        /// the pool. This must have been already checked by the
+        /// calling party.
+        fn use_allowance(&self, allowance: Bucket, amount: TokenQuantity)
+                         -> (NonFungibleGlobalId, ResourceAddress, Option<Bucket>)
+        {
+            let nfdata: AllowanceNfData =
+                ResourceManager::from(allowance.resource_address())
+                .get_non_fungible_data(
+                    &allowance.as_non_fungible().non_fungible_local_id());
+            let mut burn = false;
+            let owner_nfgid = nfdata.escrow_pool.1;
+            let withdraw_resource = nfdata.for_resource;
+
+            let (take_nflids, take_amount) = amount.extract_max_values();
+
+            assert_eq!(Runtime::global_address(), nfdata.escrow_pool.0,
+                       "allowance is not for this escrow");
+
+            let now = unix_time_now();
+            assert!(nfdata.valid_after <= now,
+                    "2009 allowance not yet valid");
+            assert!(nfdata.valid_until.is_none()
+                    || nfdata.valid_until.unwrap() >= now,
+                    "2011 allowance no longer valid");
+
+            // Check that the allowance is big enough for this
+            // withdrawal.
+            match nfdata.max_amount {
+                Some(TokenQuantity::NonFungible(ref max_nflids, max_amount)) => {
+                    let mut already_taken = 0;
+                    if let Some(take_nflids) = &take_nflids {
+                        if let Some(max_nflids) = max_nflids {
+                            // The NFTs we can take out of max_nflids
+                            // shouldn't count towards the max_amount
+                            // further down.
+                            already_taken = take_nflids.intersection(max_nflids).count();
+                        }
+                    }
+                    let to_take = take_amount.unwrap_or_default()
+                        + length_of_option_set(&take_nflids) - already_taken;
+                    assert!(to_take <= max_amount.unwrap_or_default().into(),
+                            "insufficient allowance");
+                },
+                Some(TokenQuantity::Fungible(max_amount)) => {
+                    assert!(take_amount.unwrap_or_default() + length_of_option_set(&take_nflids)
+                            <= max_amount,
+                            "2010 insufficient allowance");
+                },
+                None => {
+                    // This means there is no limit
+                },
+            }
+
+            // Update the allowance to reflect the withdrawal
+            // indicated.
+            match nfdata.life_cycle {
+                AllowanceLifeCycle::OneOff => {
+                    burn = true;
+                },
+                AllowanceLifeCycle::Accumulating => {
+                    match nfdata.max_amount {
+                        Some(TokenQuantity::Fungible(max_amount)) => {
+                            let new_max_amount = max_amount
+                                - take_amount.unwrap_or_default()
+                                - length_of_option_set(&take_nflids);
+                            if new_max_amount.is_zero() { burn = true } else {
+                                ResourceManager::from(allowance.resource_address())
+                                    .update_non_fungible_data(
+                                        &allowance.as_non_fungible().non_fungible_local_id(),
+                                        "max_amount",
+                                        Some(TokenQuantity::Fungible(new_max_amount)));
+                            }
+                        },
+                        Some(TokenQuantity::NonFungible(max_nflids, max_amount)) => {
+                            let new_max_nflids: Option<IndexSet<NonFungibleLocalId>>;
+                            if let Some(take_nflids) = take_nflids {
+                                new_max_nflids = Some(
+                                    max_nflids.unwrap().difference(&take_nflids).cloned().collect());
+                            } else {
+                                new_max_nflids = max_nflids;
+                            }
+                            let new_max_amount: Option<u64>;
+                            if let Some(take_amount) = take_amount {
+                                new_max_amount = Some(max_amount.unwrap() - u64::try_from(take_amount)
+                                                  .expect("amount to take must be whole number"));
+                            } else {
+                                new_max_amount = max_amount;
+                            }
+                            if new_max_amount.unwrap_or_default() == 0 && length_of_option_set(&new_max_nflids) == 0 {
+                                // No tokens left in allowance
+                                burn = true;
+                            } else {
+                                ResourceManager::from(allowance.resource_address())
+                                    .update_non_fungible_data(
+                                        &allowance.as_non_fungible().non_fungible_local_id(),
+                                        "max_amount",
+                                        Some(TokenQuantity::NonFungible(new_max_nflids, new_max_amount)));
+                            }
+                            
+                        },
+                        None => {
+                            burn = true;
+                        },
+                    }
+                },
+                AllowanceLifeCycle::Repeating{min_delay} => {
+                    if let Some(min_delay) = min_delay {
+                        ResourceManager::from(allowance.resource_address())
+                            .update_non_fungible_data(
+                                &allowance.as_non_fungible().non_fungible_local_id(),
+                                "valid_after",
+                                now + min_delay);
+                    }
+                }
+            }
+
+            // Burn the allowance NFT if it's now spent
+            let mut allowance = Some(allowance);
+            if burn {
+                allowance.unwrap().burn();
+                allowance = None;
+            }
+            
+            (owner_nfgid, withdraw_resource, allowance)
+        }
+
+        /// Determines if this nfgid is trusted to receive automatic
+        /// Allowances. Does not consider whether its resource is
+        /// trusted, check that individually.
         fn is_nfgid_trusted_by_pool(&self,
                                     pool: &KeyValueEntryRef<Pool>,
                                     candidate: NonFungibleGlobalId) -> bool
@@ -506,6 +749,8 @@ mod escrow {
             false
         }
 
+        /// Determines if this resource is trusted to receive
+        /// automatic Allowances.
         fn is_resource_trusted_by_pool(&self,
                                        pool: KeyValueEntryRef<Pool>,
                                        candidate: ResourceAddress) -> bool
@@ -517,6 +762,8 @@ mod escrow {
             }
         }
 
+        /// Skips checking of an unchecked proof and returns its
+        /// non-fungible global id.
         fn proof_to_nfgid(&self,
                           proof: Proof)
                           -> NonFungibleGlobalId
@@ -524,37 +771,16 @@ mod escrow {
             // We don't need to validate since we accept all
             // non-fungible badges.
             let owner = proof.skip_checking();
-            NonFungibleGlobalId::new(
-                owner.resource_address(),
-                owner.as_non_fungible().non_fungible_local_id())
+            proof_to_nfgid(&owner.as_non_fungible())
         }
 
-//        fn is_trusted_nfgid(&self,
-//                            pool: &Pool,
-//                            nfgid: &NonFungibleGlobalId)
-//                            -> bool
-//        {
-//            if let Some(trusted) = pool.trusted_nfgids.get(nfgid) {
-//                *trusted
-//            } else {
-//                false
-//            }
-//        }
-        
-//        fn is_trusted_resource(&self,
-//                               pool: &Pool,
-//                               resource: &ResourceAddress)
-//                               -> bool
-//        {
-//            if let Some(trusted) = pool.trusted_res.get(resource) {
-//                *trusted
-//            } else {
-//                false
-//            }
-//        }
 
-        /// NOTE when calling this method, `owner` must be a
-        /// confirmed identity as it is used to grant access to
+        /// Allows you to do operations on a given pool vault, running
+        /// `operation` and passing the vault corresponding to the
+        /// requested `resource` to it.
+        ///
+        /// NOTE when calling this method, `owner` must be an already
+        /// authorized identity as it is used to grant access to
         /// vaults. It *must* have come out of a proof, or out of a
         /// bucket, or otherwise from a trusted source.
         ///
@@ -586,6 +812,8 @@ mod escrow {
             }
         }
 
+        /// Retrieves the pool corresponding to the input
+        /// `owner_nfgid`, creating one if necessary.
         fn get_or_add_pool(&mut self,
                            owner_nfgid: &NonFungibleGlobalId)
                            -> KeyValueEntryRefMut<Pool>
@@ -607,7 +835,7 @@ mod escrow {
                         minter_updater => rule!(deny_all);))
 
                 // The escrow pool owner can recall any allowances
-                // they've issued.
+                // that have been issued for the pool.
                     .recall_roles(recall_roles!(
                         recaller => rule!(require(owner_nfgid.clone()));
                         recaller_updater => rule!(deny_all);
@@ -643,6 +871,12 @@ mod escrow {
             self.pools.get_mut(owner_nfgid).unwrap()
         }
 
+        /// Creates an Allowance NFT for `escrow_pool` using
+        /// `pool_mgr` to do so, and initizalizing it with the given
+        /// values.
+        ///
+        /// Note that all user authentication and authorization must
+        /// have been done before calling this function.
         fn create_allowance(&self,
                             escrow_pool: (ComponentAddress, NonFungibleGlobalId),
                             pool_mgr: ResourceManager,
@@ -650,7 +884,7 @@ mod escrow {
                             valid_after: i64,
                             life_cycle: AllowanceLifeCycle,
                             for_resource: ResourceAddress,
-                            max_amount: Option<Decimal>) -> Bucket
+                            max_amount: Option<TokenQuantity>) -> Bucket
         {
             pool_mgr
                 .mint_ruid_non_fungible(

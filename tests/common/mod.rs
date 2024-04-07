@@ -5,7 +5,7 @@ use scrypto_unit::*;
 use transaction::prelude::*;
 use radix_engine::transaction::{BalanceChange, CommitResult};
 use radix_engine_common::ManifestSbor;
-use escrow::asking_type::AskingType;
+use escrow::token_quantity::TokenQuantity;
 
 #[derive(ScryptoSbor, ManifestSbor, NonFungibleData)]
 pub struct NfData {
@@ -101,39 +101,6 @@ pub fn balance_change_nflids(commit_result: &CommitResult,
     return (BTreeSet::new(), BTreeSet::new())
 }
 
-//pub fn get_component_balance_change(result: &CommitResult,
-//                                    component: &ComponentAddress,
-//                                    resource: &ResourceAddress) -> Decimal
-//{
-//    let change =
-//        result.vault_balance_changes()
-//        .get(&GlobalAddress::from(*component)).unwrap()
-//        .get(resource).unwrap();
-//    match change {
-//        BalanceChange::Fungible(amount) => *amount,
-//        BalanceChange::NonFungible { added, removed } =>
-//            (added.len() as i64 - removed.len() as i64).into(),
-//    }
-//}
-
-//pub fn get_component_non_fungible_balance_change(
-//    result: &CommitResult,
-//    component: &ComponentAddress,
-//    resource: &ResourceAddress) ->
-//    (BTreeSet<NonFungibleLocalId>, BTreeSet<NonFungibleLocalId>)
-//{
-//    let change =
-//        result.balance_changes()
-//        .get(&GlobalAddress::from(*component)).unwrap()
-//        .get(resource).unwrap();
-//    match change {
-//        BalanceChange::Fungible(_) => panic!("resource fungible"),
-//        BalanceChange::NonFungible { added, removed } =>
-//            (added.clone(), removed.clone()),
-//    }
-//}
-
-
 /// Creates the test runner, a user, and publishes the package under
 /// test.
 pub fn setup_for_test() -> (DefaultTestRunner, User, PackageAddress) {
@@ -159,15 +126,15 @@ pub fn give_tokens(test_runner: &mut DefaultTestRunner,
                giver_nfgid: &NonFungibleGlobalId,
                recip_account: &ComponentAddress,
                gift_token: &ResourceAddress,
-               gift_amount: AskingType) {
+               gift_amount: TokenQuantity) {
 
     let amount: Decimal;
 
     let mut manifest = ManifestBuilder::new();
 
     match gift_amount {
-        AskingType::Fungible(q) => amount = q,
-        AskingType::NonFungible(nflids, q) => {
+        TokenQuantity::Fungible(q) => amount = q,
+        TokenQuantity::NonFungible(nflids, q) => {
             amount = q.unwrap_or_default().into();
             if let Some(nflids) = nflids {
                 manifest = manifest
@@ -198,10 +165,28 @@ pub fn give_tokens(test_runner: &mut DefaultTestRunner,
     receipt.expect_commit_success();
 }
 
+/// Retrieves all non-fungible local ids of a given resource held by
+/// an account. For non-fungibles it's like
+/// TestRunner::get_component_balance except better.
+pub fn get_component_nflids(test_runner: &mut DefaultTestRunner,
+                            account: ComponentAddress,
+                            resource: ResourceAddress)
+                            -> BTreeSet<NonFungibleLocalId>
+{
+    let mut nflids: BTreeSet<NonFungibleLocalId> = BTreeSet::new();
+    let vaults = test_runner.get_component_vaults(account, resource);
+    for vault in vaults {
+        if let Some((_, nfs)) = test_runner.inspect_non_fungible_vault(vault) {
+            nflids.extend(nfs);
+        }
+    }
+    nflids
+}
+
 use std::ops::Range;
 
 /// Converts a vector of u64 into a vector of NonFungibleLocalId
-pub fn to_nflids(ints: Range<u64>) -> BTreeSet<NonFungibleLocalId> {
+pub fn to_nflids(ints: Range<u64>) -> IndexSet<NonFungibleLocalId> {
     let ints: Vec<u64> = ints.collect();
     ints.into_iter().map(|n| NonFungibleLocalId::Integer(n.into())).collect()
 }

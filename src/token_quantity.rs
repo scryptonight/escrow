@@ -7,7 +7,7 @@ use crate::util::length_of_option_set;
 /// *either* "n amount of fungibles" *or* "these here non-fungibles"
 /// depending on which type of resource it is paired with.
 #[derive(ScryptoSbor, ManifestSbor, Clone, PartialEq, Eq, Debug)]
-pub enum AskingType {
+pub enum TokenQuantity {
     /// Asks for this exact amount of a fungible token.
     Fungible(Decimal),
 
@@ -21,30 +21,52 @@ pub enum AskingType {
     NonFungible(Option<IndexSet<NonFungibleLocalId>>, Option<u64>),
 }
 
-impl AskingType {
+impl TokenQuantity {
+    /// Returns zero if this quantity is for zero tokens.
+    pub fn is_zero(&self) -> bool {
+        match self {
+            TokenQuantity::Fungible(price) => price.is_zero(),
+            TokenQuantity::NonFungible(set, amount) =>
+                amount.unwrap_or_default() == 0 &&
+                length_of_option_set(set) == 0,
+        }
+    }
+    
     /// Determines how many tokens in total are being asked for in
-    /// an instance of the `AskingType` enum.
+    /// an instance of the `TokenQuantity` enum.
     pub fn to_amount(&self) -> Decimal {
         match self {
-            AskingType::Fungible(price) => price.clone(),
-            AskingType::NonFungible(set, amount)
+            TokenQuantity::Fungible(price) => price.clone(),
+            TokenQuantity::NonFungible(set, amount)
                 => Decimal::from(amount.unwrap_or_default()
                                  + length_of_option_set(set) as u64),
         }
     }
 
+    /// Determines detailed quantity specifications for this
+    /// quantity. Note that this involves cloning of the data and also
+    /// potentially involves a conversion from u64 to Decimal for
+    /// NonFungible quantities.
+    pub fn extract_max_values(&self) -> (Option<IndexSet<NonFungibleLocalId>>, Option<Decimal>)
+    {
+        match self {
+            TokenQuantity::Fungible(price) => (None, Some(price.clone())),
+            TokenQuantity::NonFungible(set, amount) => (set.clone(), amount.map(|v|Decimal::from(v))),
+        }
+    }
+
     /// Checks if the values in the provided map are consistent
     /// and make sense. Panics if this does not hold.
-    pub fn check_asking_map_sanity(map: &IndexMap<ResourceAddress, AskingType>) {
+    pub fn check_token_quantity_sanity(map: &IndexMap<ResourceAddress, TokenQuantity>) {
         for (resaddr, ask) in map {
             let fung_res = resaddr.is_fungible();
             match ask {
-                AskingType::Fungible(amount) => {
-                    assert!(fung_res, "fungible AskingType used for non-fungible resource");
+                TokenQuantity::Fungible(amount) => {
+                    assert!(fung_res, "fungible TokenQuantity used for non-fungible resource");
                     assert!(!amount.is_negative(), "cannot ask for negative amounts");
                 },
-                AskingType::NonFungible(_, _) => {
-                    assert!(!fung_res, "non-fungible AskingType used for fungible resource");
+                TokenQuantity::NonFungible(_, _) => {
+                    assert!(!fung_res, "non-fungible TokenQuantity used for fungible resource");
                 }
             }
         }

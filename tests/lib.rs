@@ -1,10 +1,9 @@
-use std::ops::Neg;
-
 use scrypto::prelude::*;
 use scrypto_unit::*;
+use radix_engine::errors::*;
 use transaction::builder::ManifestBuilder;
-use radix_engine::transaction::CommitResult;
-use escrow::asking_type::AskingType;
+use radix_engine::transaction::{CommitResult, TransactionReceipt};
+use escrow::token_quantity::TokenQuantity;
 
 mod common;
 use common::{User, setup_for_test,
@@ -14,7 +13,8 @@ use common::{User, setup_for_test,
              give_tokens,
              create_nft_resource,
              to_nflids,
-             set_test_runner_clock};
+             set_test_runner_clock,
+             get_component_nflids};
 use escrow::{AllowanceLifeCycle, AllowanceNfData};
 
 fn call_instantiate(test_runner: &mut DefaultTestRunner,
@@ -106,7 +106,7 @@ fn call_withdraw(test_runner: &mut DefaultTestRunner,
                  escrow: ComponentAddress,
                  caller: NonFungibleGlobalId,
                  resource: ResourceAddress,
-                 amount: Decimal) -> CommitResult
+                 quantity: TokenQuantity) -> CommitResult
 {
     let manifest = ManifestBuilder::new()
         .create_proof_from_account_of_non_fungibles(
@@ -119,7 +119,7 @@ fn call_withdraw(test_runner: &mut DefaultTestRunner,
             "withdraw",
             |lookup| manifest_args!(lookup.proof("caller_proof"),
                                     resource,
-                                    amount))
+                                    quantity))
         .deposit_batch(user.account)
         .build();
     let receipt = test_runner.execute_manifest_ignoring_fee(
@@ -152,40 +152,6 @@ fn call_withdraw_all_of(test_runner: &mut DefaultTestRunner,
             "withdraw_all_of",
             |lookup| manifest_args!(lookup.proof("caller_proof"),
                                     resource))
-        .deposit_batch(user.account)
-        .build();
-    let receipt = test_runner.execute_manifest_ignoring_fee(
-        manifest,
-        vec![NonFungibleGlobalId::from_public_key(&user.pubkey)],
-    );
-
-    if !receipt.is_commit_success() {
-        println!("{:?}", receipt);
-        panic!("TRANSACTION FAIL");
-    }
-
-    receipt.expect_commit_success().clone()
-}
-
-fn call_withdraw_non_fungibles(test_runner: &mut DefaultTestRunner,
-                               user: &User,
-                               escrow: ComponentAddress,
-                               caller: NonFungibleGlobalId,
-                               resource: ResourceAddress,
-                               nflids: BTreeSet<NonFungibleLocalId>) -> CommitResult
-{
-    let manifest = ManifestBuilder::new()
-        .create_proof_from_account_of_non_fungibles(
-            user.account,
-            caller.resource_address(),
-            BTreeSet::from([caller.local_id().clone()]))
-        .pop_from_auth_zone("caller_proof")
-        .call_method_with_name_lookup(
-            escrow,
-            "withdraw_non_fungibles",
-            |lookup| manifest_args!(lookup.proof("caller_proof"),
-                                    resource,
-                                    nflids))
         .deposit_batch(user.account)
         .build();
     let receipt = test_runner.execute_manifest_ignoring_fee(
@@ -397,6 +363,155 @@ fn call_subsidize_and_play_impl(test_runner: &mut DefaultTestRunner,
     }
 }
 
+fn call_subsidize_with_allowance_and_play(test_runner: &mut DefaultTestRunner,
+                                          user: &User,
+                                          escrow: ComponentAddress,
+                                          caller: NonFungibleGlobalId,
+                                          allowance: NonFungibleGlobalId,
+                                          amount: Decimal,
+                                          play_resource: ResourceAddress,
+                                          force_fail: bool,
+                                          expect_success: bool) -> TransactionReceipt
+{
+    assert!(!(force_fail && expect_success),
+            "don't expect a forced fail to be a successful tx result");
+    
+    let manifest = ManifestBuilder::new()
+        .lock_fee(user.account, dec!("10"))
+        .withdraw_non_fungibles_from_account(
+            user.account,
+            allowance.resource_address(),
+            BTreeSet::from([allowance.local_id().clone()]))
+        .take_all_from_worktop(
+            allowance.resource_address(),
+            "allowance_bucket")
+        .call_method_with_name_lookup(
+            escrow,
+            "subsidize_with_allowance",
+            |lookup| manifest_args!(lookup.bucket("allowance_bucket"),
+                                    amount))
+
+        // Now some busywork to build up a bit of fees
+        .withdraw_from_account(user.account,
+                               play_resource,
+                               dec!("10"))
+        .take_from_worktop(
+            play_resource,
+            dec!("1"),
+            "play_funds1")
+        .call_method_with_name_lookup(
+            escrow,
+            "deposit_funds",
+            |lookup| manifest_args!(caller.clone(),
+                                    lookup.bucket("play_funds1"),
+                                    None::<ManifestProof>))
+        .take_from_worktop(
+            play_resource,
+            dec!("1"),
+            "play_funds2")
+        .call_method_with_name_lookup(
+            escrow,
+            "deposit_funds",
+            |lookup| manifest_args!(caller.clone(),
+                                    lookup.bucket("play_funds2"),
+                                    None::<ManifestProof>))
+        .take_from_worktop(
+            play_resource,
+            dec!("1"),
+            "play_funds3")
+        .call_method_with_name_lookup(
+            escrow,
+            "deposit_funds",
+            |lookup| manifest_args!(caller.clone(),
+                                    lookup.bucket("play_funds3"),
+                                    None::<ManifestProof>))
+        .take_from_worktop(
+            play_resource,
+            dec!("1"),
+            "play_funds4")
+        .call_method_with_name_lookup(
+            escrow,
+            "deposit_funds",
+            |lookup| manifest_args!(caller.clone(),
+                                    lookup.bucket("play_funds4"),
+                                    None::<ManifestProof>))
+        .take_from_worktop(
+            play_resource,
+            dec!("1"),
+            "play_funds5")
+        .call_method_with_name_lookup(
+            escrow,
+            "deposit_funds",
+            |lookup| manifest_args!(caller.clone(),
+                                    lookup.bucket("play_funds5"),
+                                    None::<ManifestProof>))
+        .take_from_worktop(
+            play_resource,
+            dec!("1"),
+            "play_funds6")
+        .call_method_with_name_lookup(
+            escrow,
+            "deposit_funds",
+            |lookup| manifest_args!(caller.clone(),
+                                    lookup.bucket("play_funds6"),
+                                    None::<ManifestProof>))
+        .take_from_worktop(
+            play_resource,
+            dec!("1"),
+            "play_funds7")
+        .call_method_with_name_lookup(
+            escrow,
+            "deposit_funds",
+            |lookup| manifest_args!(caller.clone(),
+                                    lookup.bucket("play_funds7"),
+                                    None::<ManifestProof>))
+        .take_from_worktop(
+            play_resource,
+            dec!("1"),
+            "play_funds8")
+        .call_method_with_name_lookup(
+            escrow,
+            "deposit_funds",
+            |lookup| manifest_args!(caller.clone(),
+                                    lookup.bucket("play_funds8"),
+                                    None::<ManifestProof>))
+        .take_from_worktop(
+            play_resource,
+            dec!("1"),
+            "play_funds9")
+        .call_method_with_name_lookup(
+            escrow,
+            "deposit_funds",
+            |lookup| manifest_args!(caller.clone(),
+                                    lookup.bucket("play_funds9"),
+                                    None::<ManifestProof>))
+        .take_from_worktop(
+            // Using a ridiculously large amount to force a fail
+            play_resource,
+            if force_fail { dec!("1000000") } else { dec!("1") },
+            "play_funds10")
+        .call_method_with_name_lookup(
+            escrow,
+            "deposit_funds",
+            |lookup| manifest_args!(caller.clone(),
+                                    lookup.bucket("play_funds10"),
+                                    None::<ManifestProof>))
+
+        .deposit_batch(user.account) // returns the Allowance
+        .build();
+    let receipt = test_runner.execute_manifest(
+        manifest,
+        vec![NonFungibleGlobalId::from_public_key(&user.pubkey)],
+    );
+
+    if receipt.is_commit_success() != expect_success {
+        println!("{:?}", receipt);
+        panic!("TRANSACTION BAD");
+    }
+
+    receipt
+}
+
 fn call_mint_allowance(test_runner: &mut DefaultTestRunner,
                        user: &User,
                        escrow: ComponentAddress,
@@ -405,7 +520,7 @@ fn call_mint_allowance(test_runner: &mut DefaultTestRunner,
                        valid_after: i64,
                        life_cycle: AllowanceLifeCycle,
                        for_resource: ResourceAddress,
-                       max_amount: Option<Decimal>) -> NonFungibleGlobalId
+                       max_amount: Option<TokenQuantity>) -> NonFungibleGlobalId
 {
     let manifest = ManifestBuilder::new()
         .create_proof_from_account_of_non_fungibles(
@@ -451,11 +566,12 @@ fn call_mint_allowance(test_runner: &mut DefaultTestRunner,
     NonFungibleGlobalId::new(allowance_resaddr, added.first().unwrap().clone())
 }
 
-fn call_reduce_allowance(test_runner: &mut DefaultTestRunner,
-                         user: &User,
-                         escrow: ComponentAddress,
-                         allowance: NonFungibleGlobalId,
-                         new_max: Decimal)
+fn call_reduce_allowance_to_amount(test_runner: &mut DefaultTestRunner,
+                                   user: &User,
+                                   escrow: ComponentAddress,
+                                   allowance: NonFungibleGlobalId,
+                                   new_max: Decimal,
+                                   expect_success: bool) -> TransactionReceipt
 {
     let manifest = ManifestBuilder::new()
         .create_proof_from_account_of_non_fungibles(
@@ -465,26 +581,62 @@ fn call_reduce_allowance(test_runner: &mut DefaultTestRunner,
         .pop_from_auth_zone("caller_proof")
         .call_method_with_name_lookup(
             escrow,
-            "reduce_allowance",
+            "reduce_allowance_to_amount",
             |lookup| manifest_args!(lookup.proof("caller_proof"),
                                     new_max))
         .build();
-    let receipt = test_runner.execute_manifest_ignoring_fee(
-        manifest,
-        vec![NonFungibleGlobalId::from_public_key(&user.pubkey)],
-    );
+    let receipt =
+        test_runner.execute_manifest_ignoring_fee(
+            manifest,
+            vec![NonFungibleGlobalId::from_public_key(&user.pubkey)],
+        );
 
-    if !receipt.is_commit_success() {
+    if receipt.is_commit_success() != expect_success {
         println!("{:?}", receipt);
-        panic!("TRANSACTION FAIL");
+        panic!("TRANSACTION BAD");
     }
+
+    receipt
+}
+
+fn call_reduce_allowance_by_nflids(test_runner: &mut DefaultTestRunner,
+                                   user: &User,
+                                   escrow: ComponentAddress,
+                                   allowance: NonFungibleGlobalId,
+                                   to_remove: IndexSet<NonFungibleLocalId>,
+                                   expect_success: bool) -> TransactionReceipt
+{
+    let manifest = ManifestBuilder::new()
+        .create_proof_from_account_of_non_fungibles(
+            user.account,
+            allowance.resource_address(),
+            BTreeSet::from([allowance.local_id().clone()]))
+        .pop_from_auth_zone("caller_proof")
+        .call_method_with_name_lookup(
+            escrow,
+            "reduce_allowance_by_nflids",
+            |lookup| manifest_args!(lookup.proof("caller_proof"),
+                                    to_remove))
+        .build();
+    let receipt =
+        test_runner.execute_manifest_ignoring_fee(
+            manifest,
+            vec![NonFungibleGlobalId::from_public_key(&user.pubkey)],
+        );
+
+    if receipt.is_commit_success() != expect_success {
+        println!("{:?}", receipt);
+        panic!("TRANSACTION BAD");
+    }
+
+    receipt
 }
 
 fn call_withdraw_with_allowance(test_runner: &mut DefaultTestRunner,
                                 user: &User,
                                 escrow: ComponentAddress,
                                 allowance: &NonFungibleGlobalId,
-                                amount: Decimal,
+                                quantity: TokenQuantity,
                                 succeed: bool) -> CommitResult
 {
     let manifest = ManifestBuilder::new()
@@ -500,48 +652,7 @@ fn call_withdraw_with_allowance(test_runner: &mut DefaultTestRunner,
             escrow,
             "withdraw_with_allowance",
             |lookup| manifest_args!(lookup.bucket("allowance_bucket"),
-                                    amount))
-        .deposit_batch(user.account)
-        .build();
-    let receipt = test_runner.execute_manifest_ignoring_fee(
-        manifest,
-        vec![NonFungibleGlobalId::from_public_key(&user.pubkey)],
-    );
-
-    if receipt.is_commit_success() != succeed {
-        println!("{:?}", receipt);
-        panic!("TRANSACTION BAD");
-    }
-
-    if succeed {
-        receipt.expect_commit_success().clone()
-    } else {
-        receipt.expect_commit_failure().clone()
-    }
-}
-
-fn call_withdraw_non_fungibles_with_allowance(
-    test_runner: &mut DefaultTestRunner,
-    user: &User,
-    escrow: ComponentAddress,
-    allowance: &NonFungibleGlobalId,
-    nflids: BTreeSet<NonFungibleLocalId>,
-    succeed: bool) -> CommitResult
-{
-    let manifest = ManifestBuilder::new()
-        .withdraw_non_fungibles_from_account(
-            user.account,
-            allowance.resource_address(),
-            BTreeSet::from([allowance.local_id().clone()]))
-        .take_non_fungibles_from_worktop(
-            allowance.resource_address(),
-            BTreeSet::from([allowance.local_id().clone()]),
-            "allowance_bucket")
-        .call_method_with_name_lookup(
-            escrow,
-            "withdraw_non_fungibles_with_allowance",
-            |lookup| manifest_args!(lookup.bucket("allowance_bucket"),
-                                    nflids))
+                                    quantity))
         .deposit_batch(user.account)
         .build();
     let receipt = test_runner.execute_manifest_ignoring_fee(
@@ -656,7 +767,7 @@ fn test_withdraw() {
                       escrow,
                       owner_badge.clone(),
                       XRD,
-                      dec!("10"));
+                      TokenQuantity::Fungible(dec!("10")));
 
     assert_eq!(dec!("-10"),
                balance_change_amount(&result, test_runner.get_component_vaults(escrow, XRD), XRD),
@@ -689,12 +800,14 @@ fn test_withdraw_non_fungibles() {
                        dec!("3"));
 
     let result =
-        call_withdraw_non_fungibles(&mut test_runner,
-                                    &owner,
-                                    escrow,
-                                    owner_badge.clone(),
-                                    nfts_res,
-                                    [1.into(), 3.into()].into());
+        call_withdraw(&mut test_runner,
+                      &owner,
+                      escrow,
+                      owner_badge.clone(),
+                      nfts_res,
+                      TokenQuantity::NonFungible(
+                          Some([1.into(), 3.into()].into()),
+                          None));
 
     assert_eq!(dec!("-2"),
                balance_change_amount(&result, test_runner.get_component_vaults(escrow, nfts_res), nfts_res),
@@ -890,15 +1003,11 @@ fn test_mint_allowance() {
                                               2,
                                               AllowanceLifeCycle::Accumulating,
                                               XRD,
-                                              Some(dec!("100")));
+                                              Some(TokenQuantity::Fungible(dec!("100"))));
 
     let nfdata = test_runner.get_non_fungible_data::<AllowanceNfData>(
         allowance_nfgid.resource_address(),
         allowance_nfgid.local_id().clone());
-//    let nfdata = get_non_fungible_data::<AllowanceNfData>(
-//        test_runner.substate_db(),
-//        allowance_nfgid.resource_address(),
-//        allowance_nfgid.local_id().clone());
 
     assert_eq!(escrow, nfdata.escrow_pool.0,
                "allowance should reference correct escrow instance");
@@ -912,13 +1021,13 @@ fn test_mint_allowance() {
             "life_cycle should be as we set it");
     assert_eq!(XRD, nfdata.for_resource,
                "for_resource should be as we set it");
-    assert_eq!(Some(dec!("100")), nfdata.max_amount,
+    assert_eq!(Some(dec!("100")), nfdata.max_amount.map(|v|v.to_amount()),
                "max_amount should be as we set it");
 }
 
 
 #[test]
-fn test_reduce_allowance() {
+fn test_reduce_allowance_to_amount() {
     let (mut test_runner, owner, package) = setup_for_test();
 
     let escrow = call_instantiate(&mut test_runner, &owner, package);
@@ -928,36 +1037,312 @@ fn test_reduce_allowance() {
     let owner_badge =
         NonFungibleGlobalId::new(badge_res, 1.into());
 
-    let allowance_nfgid = call_mint_allowance(&mut test_runner,
-                                              &owner,
-                                              escrow,
-                                              owner_badge.clone(),
-                                              Some(50),
-                                              2,
-                                              AllowanceLifeCycle::Accumulating,
-                                              XRD,
-                                              Some(dec!("100")));
+    let allowance_f_nfgid = call_mint_allowance(&mut test_runner,
+                                                &owner,
+                                                escrow,
+                                                owner_badge.clone(),
+                                                Some(50),
+                                                2,
+                                                AllowanceLifeCycle::Accumulating,
+                                                XRD,
+                                                Some(TokenQuantity::Fungible(dec!("100"))));
 
-    call_reduce_allowance(&mut test_runner,
-                          &owner,
-                          escrow,
-                          allowance_nfgid.clone(),
-                          dec!("25"));
+    // Verify negative new_max fails
+    let receipt =
+        call_reduce_allowance_to_amount(&mut test_runner,
+                                        &owner,
+                                        escrow,
+                                        allowance_f_nfgid.clone(),
+                                        dec!("-2"),
+                                        false);
+    receipt.expect_specific_failure(|error| {
+        if let RuntimeError::ApplicationError(ApplicationError::PanicMessage(msg)) = error {
+            msg.starts_with("2003 ")
+        } else {
+            false
+        }
+    });
+    drop(receipt);
+    
+    // Verify successful reduction of Fungible allowance
+    call_reduce_allowance_to_amount(&mut test_runner,
+                                    &owner,
+                                    escrow,
+                                    allowance_f_nfgid.clone(),
+                                    dec!("25"),
+                                    true);
 
     let nfdata = test_runner.get_non_fungible_data::<AllowanceNfData>(
-        allowance_nfgid.resource_address(),
-        allowance_nfgid.local_id().clone());
+        allowance_f_nfgid.resource_address(),
+        allowance_f_nfgid.local_id().clone());
 
-//    let nfdata = get_non_fungible_data::<AllowanceNfData>(
-//        test_runner.substate_db(),
-//        allowance_nfgid.resource_address(),
-//        allowance_nfgid.local_id().clone());
-
-    assert_eq!(Some(dec!("25")), nfdata.max_amount,
+    assert_eq!(Some(dec!("25")), nfdata.max_amount.map(|v|v.to_amount()),
                "max_amount should have been reduced");
+
+
+    // Verify too high allowance reduction on Fungible allowance fails
+    let receipt =
+        call_reduce_allowance_to_amount(&mut test_runner,
+                                        &owner,
+                                        escrow,
+                                        allowance_f_nfgid.clone(),
+                                        dec!("200"),
+                                        false);
+    receipt.expect_specific_failure(|error| {
+        if let RuntimeError::ApplicationError(ApplicationError::PanicMessage(msg)) = error {
+            msg.starts_with("2000 ")
+        } else {
+            false
+        }
+    });
+    drop(receipt);
+
+
+    let nf_resaddr =
+        create_nft_resource(&mut test_runner,
+                            &owner,
+                            0,
+                            200,
+                            None);
+
+    let allowance_nf1_nfgid = call_mint_allowance(&mut test_runner,
+                                                 &owner,
+                                                 escrow,
+                                                 owner_badge.clone(),
+                                                 Some(50),
+                                                 2,
+                                                 AllowanceLifeCycle::Accumulating,
+                                                 nf_resaddr,
+                                                 Some(TokenQuantity::NonFungible(
+                                                     Some((0..50).map(|v|v.into()).collect()),
+                                                     Some(100))));
+
+    // Verify decimal number on NonFungible allowance fails
+    let receipt =
+        call_reduce_allowance_to_amount(&mut test_runner,
+                                        &owner,
+                                        escrow,
+                                        allowance_nf1_nfgid.clone(),
+                                        dec!("1.5"),
+                                        false);
+    receipt.expect_specific_failure(|error| {
+        if let RuntimeError::ApplicationError(ApplicationError::PanicMessage(msg)) = error {
+            msg.starts_with("2004 ")
+        } else {
+            false
+        }
+    });
+    drop(receipt);
+
+    // Verify successful reduction of NonFungible allowance
+    call_reduce_allowance_to_amount(&mut test_runner,
+                                    &owner,
+                                    escrow,
+                                    allowance_nf1_nfgid.clone(),
+                                    dec!("25"),
+                                    true);
+
+    let nfdata = test_runner.get_non_fungible_data::<AllowanceNfData>(
+        allowance_nf1_nfgid.resource_address(),
+        allowance_nf1_nfgid.local_id().clone());
+
+    if let Some(TokenQuantity::NonFungible(Some(nflids), Some(amount))) = nfdata.max_amount {
+        assert_eq!(25, amount,
+                   "max_amount should have been reduced");
+        assert_eq!(50, nflids.len(),
+                   "nflids quantity should be unchanged");
+    } else { panic!("max_amount should be NonFungible"); }
+
+
+    // Verify too high allowance reduction on NonFungible allowance fails
+    let receipt =
+        call_reduce_allowance_to_amount(&mut test_runner,
+                                        &owner,
+                                        escrow,
+                                        allowance_nf1_nfgid.clone(),
+                                        dec!("50"),
+                                        false);
+    receipt.expect_specific_failure(|error| {
+        if let RuntimeError::ApplicationError(ApplicationError::PanicMessage(msg)) = error {
+            msg.starts_with("2001 ")
+        } else {
+            false
+        }
+    });
+    drop(receipt);
+
+
+    // Make a NonFungible allowance with None max_amount
+    let allowance_nf2_nfgid = call_mint_allowance(&mut test_runner,
+                                                 &owner,
+                                                 escrow,
+                                                 owner_badge.clone(),
+                                                 Some(50),
+                                                 2,
+                                                 AllowanceLifeCycle::Accumulating,
+                                                 nf_resaddr,
+                                                 Some(TokenQuantity::NonFungible(
+                                                     Some((0..50).map(|v|v.into()).collect()),
+                                                     None)));
+
+    // Verify that allowance reduction on NonFungible allowance with
+    // None max_amount fails
+    let receipt =
+        call_reduce_allowance_to_amount(&mut test_runner,
+                                        &owner,
+                                        escrow,
+                                        allowance_nf2_nfgid.clone(),
+                                        dec!("1"),
+                                        false);
+    receipt.expect_specific_failure(|error| {
+        if let RuntimeError::ApplicationError(ApplicationError::PanicMessage(msg)) = error {
+            msg.starts_with("2002 ")
+        } else {
+            false
+        }
+    });
+    drop(receipt);
 }
 
 
+
+#[test]
+fn test_reduce_allowance_by_nflids() {
+    let (mut test_runner, owner, package) = setup_for_test();
+
+    let escrow = call_instantiate(&mut test_runner, &owner, package);
+
+    let badge_res =
+        test_runner.create_non_fungible_resource(owner.account);
+    let owner_badge =
+        NonFungibleGlobalId::new(badge_res, 1.into());
+
+    let allowance_f1_nfgid = call_mint_allowance(&mut test_runner,
+                                                &owner,
+                                                escrow,
+                                                owner_badge.clone(),
+                                                Some(50),
+                                                2,
+                                                AllowanceLifeCycle::Accumulating,
+                                                XRD,
+                                                Some(TokenQuantity::Fungible(dec!("100"))));
+
+    // Verify call on Fungible allowance fails
+    let receipt =
+        call_reduce_allowance_by_nflids(&mut test_runner,
+                                        &owner,
+                                        escrow,
+                                        allowance_f1_nfgid.clone(),
+                                        (0..10).map(|v|v.into()).collect(),
+                                        false);
+    receipt.expect_specific_failure(|error| {
+        if let RuntimeError::ApplicationError(ApplicationError::PanicMessage(msg)) = error {
+            msg.starts_with("2005 ")
+        } else {
+            false
+        }
+    });
+    drop(receipt);
+
+
+    let allowance_f2_nfgid = call_mint_allowance(&mut test_runner,
+                                                &owner,
+                                                escrow,
+                                                owner_badge.clone(),
+                                                Some(50),
+                                                2,
+                                                AllowanceLifeCycle::Accumulating,
+                                                XRD,
+                                                None);
+
+    // Verify call on None allowance fails
+    let receipt =
+        call_reduce_allowance_by_nflids(&mut test_runner,
+                                        &owner,
+                                        escrow,
+                                        allowance_f2_nfgid.clone(),
+                                        (0..10).map(|v|v.into()).collect(),
+                                        false);
+    receipt.expect_specific_failure(|error| {
+        if let RuntimeError::ApplicationError(ApplicationError::PanicMessage(msg)) = error {
+            msg.starts_with("2007 ")
+        } else {
+            false
+        }
+    });
+    drop(receipt);
+
+
+    let nf_resaddr =
+        create_nft_resource(&mut test_runner,
+                            &owner,
+                            0,
+                            200,
+                            None);
+
+    let allowance_nf3_nfgid = call_mint_allowance(&mut test_runner,
+                                                 &owner,
+                                                 escrow,
+                                                 owner_badge.clone(),
+                                                 Some(50),
+                                                 2,
+                                                 AllowanceLifeCycle::Accumulating,
+                                                 nf_resaddr,
+                                                 Some(TokenQuantity::NonFungible(
+                                                     None,
+                                                     Some(100))));
+
+    // Verify call on allowance with None nflids fails
+    let receipt =
+        call_reduce_allowance_by_nflids(&mut test_runner,
+                                        &owner,
+                                        escrow,
+                                        allowance_nf3_nfgid.clone(),
+                                        (0..10).map(|v|v.into()).collect(),
+                                        false);
+    receipt.expect_specific_failure(|error| {
+        if let RuntimeError::ApplicationError(ApplicationError::PanicMessage(msg)) = error {
+            msg.starts_with("2006 ")
+        } else {
+            false
+        }
+    });
+    drop(receipt);
+
+
+    let allowance_nf4_nfgid = call_mint_allowance(&mut test_runner,
+                                                 &owner,
+                                                 escrow,
+                                                 owner_badge.clone(),
+                                                 Some(50),
+                                                 2,
+                                                 AllowanceLifeCycle::Accumulating,
+                                                 nf_resaddr,
+                                                 Some(TokenQuantity::NonFungible(
+                                                     Some((0..50).map(|v|v.into()).collect()),
+                                                     Some(100))));
+
+    // Verify successful reduction of NonFungible allowance
+    call_reduce_allowance_by_nflids(&mut test_runner,
+                                    &owner,
+                                    escrow,
+                                    allowance_nf4_nfgid.clone(),
+                                    (0..10).map(|v|v.into()).collect(),
+                                    true);
+
+    let nfdata = test_runner.get_non_fungible_data::<AllowanceNfData>(
+        allowance_nf4_nfgid.resource_address(),
+        allowance_nf4_nfgid.local_id().clone());
+
+    if let Some(TokenQuantity::NonFungible(Some(nflids), Some(amount))) = nfdata.max_amount {
+        assert_eq!(100, amount,
+                   "max_amount should be unchanged");
+        assert_eq!(40, nflids.len(),
+                   "nflids quantity should be down by 10");
+        assert!(nflids == (10..50).map(|v|v.into()).collect::<IndexSet<_>>(),
+                "nflids should be 10-49 inclusive");
+    } else { panic!("max_amount should be NonFungible"); }
+}
 
 
 #[test]
@@ -989,7 +1374,7 @@ fn test_withdraw_with_allowance_within_validity_period() {
                                                   2,
                                                   AllowanceLifeCycle::OneOff,
                                                   play_resource,
-                                                  Some(dec!("100")));
+                                                  Some(TokenQuantity::Fungible(dec!("100"))));
 
     let allowance_acc_nfgid = call_mint_allowance(&mut test_runner,
                                                   &alice,
@@ -999,7 +1384,7 @@ fn test_withdraw_with_allowance_within_validity_period() {
                                                   2,
                                                   AllowanceLifeCycle::Accumulating,
                                                   play_resource,
-                                                  Some(dec!("100")));
+                                                  Some(TokenQuantity::Fungible(dec!("100"))));
     
     let allowance_rep_nfgid = call_mint_allowance(&mut test_runner,
                                                   &alice,
@@ -1010,7 +1395,7 @@ fn test_withdraw_with_allowance_within_validity_period() {
                                                   AllowanceLifeCycle::Repeating{
                                                       min_delay: None},
                                                   play_resource,
-                                                  Some(dec!("100")));
+                                                  Some(TokenQuantity::Fungible(dec!("100"))));
 
     // This one has a min_delay, no max_amount and no valid_until to
     // test those things
@@ -1047,7 +1432,7 @@ fn test_withdraw_with_allowance_within_validity_period() {
                 &alice.nfgid,
                 &bob.account,
                 &allowance_resaddr,
-                AskingType::Fungible(dec!(4)));
+                TokenQuantity::Fungible(dec!(4)));
 
 
     // Test allowances within their valid period
@@ -1060,21 +1445,21 @@ fn test_withdraw_with_allowance_within_validity_period() {
         &bob,
         escrow,
         &allowance_1off_nfgid,
-        dec!("10000"),
+        TokenQuantity::Fungible(dec!("10000")),
         false);
     call_withdraw_with_allowance(
         &mut test_runner,
         &bob,
         escrow,
         &allowance_acc_nfgid,
-        dec!("10000"),
+        TokenQuantity::Fungible(dec!("10000")),
         false);
     call_withdraw_with_allowance(
         &mut test_runner,
         &bob,
         escrow,
         &allowance_rep_nfgid,
-        dec!("10000"),
+        TokenQuantity::Fungible(dec!("10000")),
         false);
 
 
@@ -1084,7 +1469,7 @@ fn test_withdraw_with_allowance_within_validity_period() {
         &bob,
         escrow,
         &allowance_1off_nfgid,
-        dec!("55"),
+        TokenQuantity::Fungible(dec!("55")),
         true);
 
     assert_eq!(dec!("55"),
@@ -1101,7 +1486,7 @@ fn test_withdraw_with_allowance_within_validity_period() {
         &bob,
         escrow,
         &allowance_acc_nfgid,
-        dec!("40"),
+        TokenQuantity::Fungible(dec!("40")),
         true);
 
     assert_eq!(dec!("40"),
@@ -1110,13 +1495,8 @@ fn test_withdraw_with_allowance_within_validity_period() {
     let nfdata = test_runner.get_non_fungible_data::<AllowanceNfData>(
         allowance_resaddr,
         allowance_acc_nfgid.local_id().clone());
-//    let nfdata =
-//        get_non_fungible_data::<AllowanceNfData>(
-//            test_runner.substate_db(),
-//            allowance_resaddr,
-//            allowance_acc_nfgid.local_id().clone());
     assert_eq!(dec!("60"),
-               nfdata.max_amount.unwrap(),
+               nfdata.max_amount.unwrap().to_amount(),
                "Accumulating allowance should be down 40 tokens");
 
     let result = call_withdraw_with_allowance(
@@ -1124,7 +1504,7 @@ fn test_withdraw_with_allowance_within_validity_period() {
         &bob,
         escrow,
         &allowance_acc_nfgid,
-        dec!("60"),
+        TokenQuantity::Fungible(dec!("60")),
         true);
     assert_eq!(dec!("60"),
                balance_change_amount(&result, test_runner.get_component_vaults(bob.account, play_resource), play_resource),
@@ -1140,7 +1520,7 @@ fn test_withdraw_with_allowance_within_validity_period() {
         &bob,
         escrow,
         &allowance_rep_nfgid,
-        dec!("10"),
+        TokenQuantity::Fungible(dec!("10")),
         true);
     assert_eq!(dec!("10"),
                balance_change_amount(&result, test_runner.get_component_vaults(bob.account, play_resource), play_resource),
@@ -1151,7 +1531,7 @@ fn test_withdraw_with_allowance_within_validity_period() {
         &bob,
         escrow,
         &allowance_rep_nfgid,
-        dec!("100"),
+        TokenQuantity::Fungible(dec!("100")),
         true);
     assert_eq!(dec!("100"),
                balance_change_amount(&result, test_runner.get_component_vaults(bob.account, play_resource), play_resource),
@@ -1162,7 +1542,7 @@ fn test_withdraw_with_allowance_within_validity_period() {
         &bob,
         escrow,
         &allowance_rep_nfgid,
-        dec!("100"),
+        TokenQuantity::Fungible(dec!("100")),
         true);
     assert_eq!(dec!("100"),
                balance_change_amount(&result, test_runner.get_component_vaults(bob.account, play_resource), play_resource),
@@ -1175,7 +1555,7 @@ fn test_withdraw_with_allowance_within_validity_period() {
         &bob,
         escrow,
         &allowance_rep2_nfgid,
-        dec!("1000"),
+        TokenQuantity::Fungible(dec!("1000")),
         true);
     assert_eq!(dec!("1000"),
                balance_change_amount(&result, test_runner.get_component_vaults(bob.account, play_resource), play_resource),
@@ -1187,7 +1567,7 @@ fn test_withdraw_with_allowance_within_validity_period() {
         &bob,
         escrow,
         &allowance_rep2_nfgid,
-        dec!("100"),
+        TokenQuantity::Fungible(dec!("100")),
         false);
 
     // Set a time that is past the min_delay
@@ -1199,7 +1579,7 @@ fn test_withdraw_with_allowance_within_validity_period() {
         &bob,
         escrow,
         &allowance_rep2_nfgid,
-        dec!("100"),
+        TokenQuantity::Fungible(dec!("100")),
         true);
     assert_eq!(dec!("100"),
                balance_change_amount(&result, test_runner.get_component_vaults(bob.account, play_resource), play_resource),
@@ -1236,7 +1616,7 @@ fn test_withdraw_with_allowance_fails_outside_vailidity_period() {
                                                   2,
                                                   AllowanceLifeCycle::OneOff,
                                                   play_resource,
-                                                  Some(dec!("100")));
+                                                  Some(TokenQuantity::Fungible(dec!("100"))));
 
     let allowance_acc_nfgid = call_mint_allowance(&mut test_runner,
                                                   &alice,
@@ -1246,7 +1626,7 @@ fn test_withdraw_with_allowance_fails_outside_vailidity_period() {
                                                   2,
                                                   AllowanceLifeCycle::Accumulating,
                                                   play_resource,
-                                                  Some(dec!("100")));
+                                                  Some(TokenQuantity::Fungible(dec!("100"))));
     
     let allowance_rep_nfgid = call_mint_allowance(&mut test_runner,
                                                   &alice,
@@ -1257,7 +1637,7 @@ fn test_withdraw_with_allowance_fails_outside_vailidity_period() {
                                                   AllowanceLifeCycle::Repeating{
                                                       min_delay: None},
                                                   play_resource,
-                                                  Some(dec!("100")));
+                                                  Some(TokenQuantity::Fungible(dec!("100"))));
 
     // This one has a min_delay, no max_amount and no valid_until to
     // test those things
@@ -1294,7 +1674,7 @@ fn test_withdraw_with_allowance_fails_outside_vailidity_period() {
                 &alice.nfgid,
                 &bob.account,
                 &allowance_resaddr,
-                AskingType::Fungible(dec!(4)));
+                TokenQuantity::Fungible(dec!(4)));
 
 
     // Test that allowances fail before they are valid
@@ -1304,7 +1684,7 @@ fn test_withdraw_with_allowance_fails_outside_vailidity_period() {
         &bob,
         escrow,
         &allowance_1off_nfgid,
-        dec!("1"),
+        TokenQuantity::Fungible(dec!("1")),
         false);
         
     call_withdraw_with_allowance(
@@ -1312,7 +1692,7 @@ fn test_withdraw_with_allowance_fails_outside_vailidity_period() {
         &bob,
         escrow,
         &allowance_acc_nfgid,
-        dec!("1"),
+        TokenQuantity::Fungible(dec!("1")),
         false);
 
     call_withdraw_with_allowance(
@@ -1320,7 +1700,7 @@ fn test_withdraw_with_allowance_fails_outside_vailidity_period() {
         &bob,
         escrow,
         &allowance_rep_nfgid,
-        dec!("1"),
+        TokenQuantity::Fungible(dec!("1")),
         false);
 
 
@@ -1333,7 +1713,7 @@ fn test_withdraw_with_allowance_fails_outside_vailidity_period() {
         &bob,
         escrow,
         &allowance_1off_nfgid,
-        dec!("1"),
+        TokenQuantity::Fungible(dec!("1")),
         false);
         
     call_withdraw_with_allowance(
@@ -1341,7 +1721,7 @@ fn test_withdraw_with_allowance_fails_outside_vailidity_period() {
         &bob,
         escrow,
         &allowance_acc_nfgid,
-        dec!("1"),
+        TokenQuantity::Fungible(dec!("1")),
         false);
 
     call_withdraw_with_allowance(
@@ -1349,7 +1729,7 @@ fn test_withdraw_with_allowance_fails_outside_vailidity_period() {
         &bob,
         escrow,
         &allowance_rep_nfgid,
-        dec!("1"),
+        TokenQuantity::Fungible(dec!("1")),
         false);
 }
 
@@ -1409,7 +1789,7 @@ fn test_withdraw_non_fungibles_with_allowance_within_validity_period() {
                                                    2,
                                                    AllowanceLifeCycle::OneOff,
                                                    play_resource,
-                                                   Some(dec!("10")));
+                                                   Some(TokenQuantity::Fungible(dec!("10"))));
 
     let allowance_acc_nfgid = call_mint_allowance(&mut test_runner,
                                                   &alice,
@@ -1419,7 +1799,7 @@ fn test_withdraw_non_fungibles_with_allowance_within_validity_period() {
                                                   2,
                                                   AllowanceLifeCycle::Accumulating,
                                                   play_resource,
-                                                  Some(dec!("10")));
+                                                  Some(TokenQuantity::Fungible(dec!("10"))));
     
     let allowance_rep_nfgid = call_mint_allowance(&mut test_runner,
                                                   &alice,
@@ -1430,7 +1810,7 @@ fn test_withdraw_non_fungibles_with_allowance_within_validity_period() {
                                                   AllowanceLifeCycle::Repeating{
                                                       min_delay: None},
                                                   play_resource,
-                                                  Some(dec!("10")));
+                                                  Some(TokenQuantity::Fungible(dec!("10"))));
 
     // This one has a min_delay, no max_amount and no valid_until to
     // test those things
@@ -1467,43 +1847,51 @@ fn test_withdraw_non_fungibles_with_allowance_within_validity_period() {
                 &alice.nfgid,
                 &bob.account,
                 &allowance_resaddr,
-                AskingType::Fungible(dec!(4)));
+                TokenQuantity::Fungible(dec!(4)));
 
     // Test allowances within their valid period
 
     set_test_runner_clock(&mut test_runner, 400);
 
     // Try to withdraw too much
-    call_withdraw_non_fungibles_with_allowance(
+    call_withdraw_with_allowance(
         &mut test_runner,
         &bob,
         escrow,
         &allowance_1off_nfgid,
-        to_nflids(1..20).into(),
+        TokenQuantity::NonFungible(
+            Some(to_nflids(1..20)),
+            None),
         false);
-    call_withdraw_non_fungibles_with_allowance(
+    call_withdraw_with_allowance(
         &mut test_runner,
         &bob,
         escrow,
         &allowance_acc_nfgid,
-        to_nflids(1..20).into(),
+        TokenQuantity::NonFungible(
+            Some(to_nflids(1..20)),
+            None),
         false);
-    call_withdraw_non_fungibles_with_allowance(
+    call_withdraw_with_allowance(
         &mut test_runner,
         &bob,
         escrow,
         &allowance_rep_nfgid,
-        to_nflids(1..20).into(),
+        TokenQuantity::NonFungible(
+            Some(to_nflids(1..20)),
+            None),
         false);
 
 
     // Test withdrawal with one-off allowance
-    let result = call_withdraw_non_fungibles_with_allowance(
+    let result = call_withdraw_with_allowance(
         &mut test_runner,
         &bob,
         escrow,
         &allowance_1off_nfgid,
-        to_nflids(1..6).into(),
+        TokenQuantity::NonFungible(
+            Some(to_nflids(1..6)),
+            None),
         true);
 
     assert_eq!(dec!("5"),
@@ -1515,12 +1903,14 @@ fn test_withdraw_non_fungibles_with_allowance_within_validity_period() {
 
 
     // Test withdrawal with accumulating allowance
-    let result = call_withdraw_non_fungibles_with_allowance(
+    let result = call_withdraw_with_allowance(
         &mut test_runner,
         &bob,
         escrow,
         &allowance_acc_nfgid,
-        to_nflids(11..15).into(),
+        TokenQuantity::NonFungible(
+            Some(to_nflids(11..15)),
+            None),
         true);
 
     assert_eq!(dec!("4"),
@@ -1529,21 +1919,18 @@ fn test_withdraw_non_fungibles_with_allowance_within_validity_period() {
     let nfdata = test_runner.get_non_fungible_data::<AllowanceNfData>(
         allowance_resaddr,
         allowance_acc_nfgid.local_id().clone());
-//    let nfdata =
-//        get_non_fungible_data::<AllowanceNfData>(
-//            test_runner.substate_db(),
-//            allowance_resaddr,
-//            allowance_acc_nfgid.local_id().clone());
     assert_eq!(dec!("6"),
-               nfdata.max_amount.unwrap(),
+               nfdata.max_amount.unwrap().to_amount(),
                "Accumulating allowance should be down 4 NFTs");
 
-    let result = call_withdraw_non_fungibles_with_allowance(
+    let result = call_withdraw_with_allowance(
         &mut test_runner,
         &bob,
         escrow,
         &allowance_acc_nfgid,
-        to_nflids(15..21).into(),
+        TokenQuantity::NonFungible(
+            Some(to_nflids(15..21)),
+            None),
         true);
     assert_eq!(dec!("6"),
                balance_change_amount(&result, test_runner.get_component_vaults(bob.account, play_resource), play_resource),
@@ -1554,34 +1941,40 @@ fn test_withdraw_non_fungibles_with_allowance_within_validity_period() {
 
 
     // Test withdrawal with repeating allowance
-    let result = call_withdraw_non_fungibles_with_allowance(
+    let result = call_withdraw_with_allowance(
         &mut test_runner,
         &bob,
         escrow,
         &allowance_rep_nfgid,
-        to_nflids(801..805).into(),
+        TokenQuantity::NonFungible(
+            Some(to_nflids(801..805)),
+            None),
         true);
     assert_eq!(dec!("4"),
                balance_change_amount(&result, test_runner.get_component_vaults(bob.account, play_resource), play_resource),
                "Bob should be 4 NFTs up");
 
-    let result = call_withdraw_non_fungibles_with_allowance(
+    let result = call_withdraw_with_allowance(
         &mut test_runner,
         &bob,
         escrow,
         &allowance_rep_nfgid,
-        to_nflids(811..821).into(),
+        TokenQuantity::NonFungible(
+            Some(to_nflids(811..821).into()),
+            None),
         true);
     assert_eq!(dec!("10"),
                balance_change_amount(&result, test_runner.get_component_vaults(bob.account, play_resource), play_resource),
                "Bob should be 10 NFTs up");
 
-    let result = call_withdraw_non_fungibles_with_allowance(
+    let result = call_withdraw_with_allowance(
         &mut test_runner,
         &bob,
         escrow,
         &allowance_rep_nfgid,
-        to_nflids(821..831).into(),
+        TokenQuantity::NonFungible(
+            Some(to_nflids(821..831)),
+            None),
         true);
     assert_eq!(dec!("10"),
                balance_change_amount(&result, test_runner.get_component_vaults(bob.account, play_resource), play_resource),
@@ -1589,36 +1982,42 @@ fn test_withdraw_non_fungibles_with_allowance_within_validity_period() {
 
 
     // Test withdrawal without max_amount
-    let result = call_withdraw_non_fungibles_with_allowance(
+    let result = call_withdraw_with_allowance(
         &mut test_runner,
         &bob,
         escrow,
         &allowance_rep2_nfgid,
-        to_nflids(701..801).into(),
+        TokenQuantity::NonFungible(
+            Some(to_nflids(701..801)),
+            None),
         true);
     assert_eq!(dec!("100"),
                balance_change_amount(&result, test_runner.get_component_vaults(bob.account, play_resource), play_resource),
                "Bob should be 100 NFTs up");
 
     // Test that we cannot withdraw again (because of min_delay)
-    call_withdraw_non_fungibles_with_allowance(
+    call_withdraw_with_allowance(
         &mut test_runner,
         &bob,
         escrow,
         &allowance_rep2_nfgid,
-        to_nflids(601..701).into(),
+        TokenQuantity::NonFungible(
+            Some(to_nflids(601..701)),
+            None),
         false);
 
     // Set a time that is past the min_delay
     set_test_runner_clock(&mut test_runner, 900);
 
     // Test that we can withdraw again after the min_delay is over
-    let result = call_withdraw_non_fungibles_with_allowance(
+    let result = call_withdraw_with_allowance(
         &mut test_runner,
         &bob,
         escrow,
         &allowance_rep2_nfgid,
-        to_nflids(501..601).into(),
+        TokenQuantity::NonFungible(
+            Some(to_nflids(501..601)),
+            None),
         true);
     assert_eq!(dec!("100"),
                balance_change_amount(&result, test_runner.get_component_vaults(bob.account, play_resource), play_resource),
@@ -1691,7 +2090,7 @@ fn test_withdraw_non_fungibles_with_allowance_fails_outside_validity_period() {
                                                    2,
                                                    AllowanceLifeCycle::OneOff,
                                                    play_resource,
-                                                   Some(dec!("10")));
+                                                   Some(TokenQuantity::Fungible(dec!("10"))));
 
     let allowance_acc_nfgid = call_mint_allowance(&mut test_runner,
                                                   &alice,
@@ -1701,7 +2100,7 @@ fn test_withdraw_non_fungibles_with_allowance_fails_outside_validity_period() {
                                                   2,
                                                   AllowanceLifeCycle::Accumulating,
                                                   play_resource,
-                                                  Some(dec!("10")));
+                                                  Some(TokenQuantity::Fungible(dec!("10"))));
     
     let allowance_rep_nfgid = call_mint_allowance(&mut test_runner,
                                                   &alice,
@@ -1712,7 +2111,7 @@ fn test_withdraw_non_fungibles_with_allowance_fails_outside_validity_period() {
                                                   AllowanceLifeCycle::Repeating{
                                                       min_delay: None},
                                                   play_resource,
-                                                  Some(dec!("10")));
+                                                  Some(TokenQuantity::Fungible(dec!("10"))));
 
     // This one has a min_delay, no max_amount and no valid_until to
     // test those things
@@ -1749,33 +2148,39 @@ fn test_withdraw_non_fungibles_with_allowance_fails_outside_validity_period() {
                 &alice.nfgid,
                 &bob.account,
                 &allowance_resaddr,
-                AskingType::Fungible(dec!(4)));
+                TokenQuantity::Fungible(dec!(4)));
 
 
     // Test that allowances fail before they are valid
 
-    call_withdraw_non_fungibles_with_allowance(
+    call_withdraw_with_allowance(
         &mut test_runner,
         &bob,
         escrow,
         &allowance_1off_nfgid,
-        [1.into()].into(),
+        TokenQuantity::NonFungible(
+            Some([1.into()].into()),
+            None),
         false);
         
-    call_withdraw_non_fungibles_with_allowance(
+    call_withdraw_with_allowance(
         &mut test_runner,
         &bob,
         escrow,
         &allowance_acc_nfgid,
-        [1.into()].into(),
+        TokenQuantity::NonFungible(
+            Some([1.into()].into()),
+            None),
         false);
 
-    call_withdraw_non_fungibles_with_allowance(
+    call_withdraw_with_allowance(
         &mut test_runner,
         &bob,
         escrow,
         &allowance_rep_nfgid,
-        [1.into()].into(),
+        TokenQuantity::NonFungible(
+            Some([1.into()].into()),
+            None),
         false);
 
 
@@ -1783,28 +2188,34 @@ fn test_withdraw_non_fungibles_with_allowance_fails_outside_validity_period() {
 
     set_test_runner_clock(&mut test_runner, 600);
 
-    call_withdraw_non_fungibles_with_allowance(
+    call_withdraw_with_allowance(
         &mut test_runner,
         &bob,
         escrow,
         &allowance_1off_nfgid,
-        [1.into()].into(),
+        TokenQuantity::NonFungible(
+            Some([1.into()].into()),
+            None),
         false);
         
-    call_withdraw_non_fungibles_with_allowance(
+    call_withdraw_with_allowance(
         &mut test_runner,
         &bob,
         escrow,
         &allowance_acc_nfgid,
-        [1.into()].into(),
+        TokenQuantity::NonFungible(
+            Some([1.into()].into()),
+            None),
         false);
 
-    call_withdraw_non_fungibles_with_allowance(
+    call_withdraw_with_allowance(
         &mut test_runner,
         &bob,
         escrow,
         &allowance_rep_nfgid,
-        [1.into()].into(),
+        TokenQuantity::NonFungible(
+            Some([1.into()].into()),
+            None),
         false);
 }
 
@@ -1818,26 +2229,36 @@ fn test_subsidize_with_allowance() {
         test_runner.create_non_fungible_resource(alice.account);
     let alice_pool_badge =
         NonFungibleGlobalId::new(alice_pool_res, 1.into());
+    let play_resource_alice =
+        test_runner.create_fungible_resource(dec!("10000"), 18, alice.account);
 
-    let play_resource =
-        test_runner.create_fungible_resource(dec!("1000"), 18, alice.account);
-    
+    let bob = make_user(&mut test_runner, Some(&"Bob".to_owned()));
+    let bob_pool_res =
+        test_runner.create_non_fungible_resource(bob.account);
+    let bob_pool_badge =
+        NonFungibleGlobalId::new(bob_pool_res, 1.into());
+    let play_resource_bob =
+        test_runner.create_fungible_resource(dec!("10000"), 18, bob.account);
+
+
+    // Put some XRD in Alice's pool so she can subsidize Bob's
+    // playtime. Keep a little for Alice's own tests.
     call_deposit_funds(&mut test_runner,
                        &alice,
                        escrow,
                        alice_pool_badge.clone(),
                        XRD,
-                       dec!("1000"));
-    
+                       dec!("9000"));
+
     let allowance_1off_nfgid = call_mint_allowance(&mut test_runner,
-                                                  &alice,
-                                                  escrow,
-                                                  alice_pool_badge.clone(),
-                                                  Some(500),
-                                                  2,
-                                                  AllowanceLifeCycle::OneOff,
-                                                  play_resource,
-                                                  Some(dec!("100")));
+                                                   &alice,
+                                                   escrow,
+                                                   alice_pool_badge.clone(),
+                                                   Some(500),
+                                                   2,
+                                                   AllowanceLifeCycle::OneOff,
+                                                   XRD,
+                                                   Some(TokenQuantity::Fungible(dec!("100"))));
 
     let allowance_acc_nfgid = call_mint_allowance(&mut test_runner,
                                                   &alice,
@@ -1846,8 +2267,8 @@ fn test_subsidize_with_allowance() {
                                                   Some(500),
                                                   2,
                                                   AllowanceLifeCycle::Accumulating,
-                                                  play_resource,
-                                                  Some(dec!("100")));
+                                                  XRD,
+                                                  Some(TokenQuantity::Fungible(dec!("100"))));
     
     let allowance_rep_nfgid = call_mint_allowance(&mut test_runner,
                                                   &alice,
@@ -1857,8 +2278,8 @@ fn test_subsidize_with_allowance() {
                                                   2,
                                                   AllowanceLifeCycle::Repeating{
                                                       min_delay: None},
-                                                  play_resource,
-                                                  Some(dec!("100")));
+                                                  XRD,
+                                                  Some(TokenQuantity::Fungible(dec!("100"))));
 
     // This one has a min_delay, no max_amount and no valid_until to
     // test those things
@@ -1870,56 +2291,407 @@ fn test_subsidize_with_allowance() {
                                                    2,
                                                    AllowanceLifeCycle::Repeating{
                                                        min_delay: Some(500)},
-                                                   play_resource,
+                                                   XRD,
                                                    None);
 
     let allowance_resaddr = allowance_1off_nfgid.resource_address();
 
-    let bob = make_user(&mut test_runner, Some(&"Bob".to_owned()));
-
+    
     // Bob gets all the allowances from Alice
     give_tokens(&mut test_runner,
                 &alice.account,
                 &alice.nfgid,
                 &bob.account,
                 &allowance_resaddr,
-                AskingType::Fungible(dec!(4)));
+                TokenQuantity::Fungible(dec!(4)));
 
-    // TODO the rest below
 
-    // Test that allowances fail before they are valid
+    // Verify that allowances fail before they are valid
+    let receipt =
+        call_subsidize_with_allowance_and_play(&mut test_runner,
+                                               &bob,
+                                               escrow,
+                                               bob_pool_badge.clone(),
+                                               allowance_1off_nfgid.clone(),
+                                               dec!("10"),
+                                               play_resource_bob,
+                                               false,
+                                               false);
+    receipt.expect_specific_failure(|error| {
+        if let RuntimeError::ApplicationError(ApplicationError::PanicMessage(msg)) = error {
+            msg.starts_with("2009 ")
+        } else {
+            false
+        }
+    });
+    drop(receipt);
+
+    let receipt =
+        call_subsidize_with_allowance_and_play(&mut test_runner,
+                                               &bob,
+                                               escrow,
+                                               bob_pool_badge.clone(),
+                                               allowance_acc_nfgid.clone(),
+                                               dec!("10"),
+                                               play_resource_bob,
+                                               false,
+                                               false);
+    receipt.expect_specific_failure(|error| {
+        if let RuntimeError::ApplicationError(ApplicationError::PanicMessage(msg)) = error {
+            msg.starts_with("2009 ")
+        } else {
+            false
+        }
+    });
+    drop(receipt);
+
+    let receipt =
+        call_subsidize_with_allowance_and_play(&mut test_runner,
+                                               &bob,
+                                               escrow,
+                                               bob_pool_badge.clone(),
+                                               allowance_rep_nfgid.clone(),
+                                               dec!("10"),
+                                               play_resource_bob,
+                                               false,
+                                               false);
+    receipt.expect_specific_failure(|error| {
+        if let RuntimeError::ApplicationError(ApplicationError::PanicMessage(msg)) = error {
+            msg.starts_with("2009 ")
+        } else {
+            false
+        }
+    });
+    drop(receipt);
+
+    // Advance time to be within validity period
+    set_test_runner_clock(&mut test_runner, 120);
+
+    // Verify that we cannot overspend the allowances
+    let receipt =
+        call_subsidize_with_allowance_and_play(&mut test_runner,
+                                               &bob,
+                                               escrow,
+                                               bob_pool_badge.clone(),
+                                               allowance_1off_nfgid.clone(),
+                                               dec!("200"),
+                                               play_resource_bob,
+                                               false,
+                                               false);
+    receipt.expect_specific_failure(|error| {
+        if let RuntimeError::ApplicationError(ApplicationError::PanicMessage(msg)) = error {
+            msg.starts_with("2010 ")
+        } else {
+            false
+        }
+    });
+    drop(receipt);
+
+    let receipt =
+        call_subsidize_with_allowance_and_play(&mut test_runner,
+                                               &bob,
+                                               escrow,
+                                               bob_pool_badge.clone(),
+                                               allowance_acc_nfgid.clone(),
+                                               dec!("200"),
+                                               play_resource_bob,
+                                               false,
+                                               false);
+    receipt.expect_specific_failure(|error| {
+        if let RuntimeError::ApplicationError(ApplicationError::PanicMessage(msg)) = error {
+            msg.starts_with("2010 ")
+        } else {
+            false
+        }
+    });
+    drop(receipt);
+
+    let receipt =
+        call_subsidize_with_allowance_and_play(&mut test_runner,
+                                               &bob,
+                                               escrow,
+                                               bob_pool_badge.clone(),
+                                               allowance_rep_nfgid.clone(),
+                                               dec!("200"),
+                                               play_resource_bob,
+                                               false,
+                                               false);
+    receipt.expect_specific_failure(|error| {
+        if let RuntimeError::ApplicationError(ApplicationError::PanicMessage(msg)) = error {
+            msg.starts_with("2010 ")
+        } else {
+            false
+        }
+    });
+    drop(receipt);
+
     
+    // Verify that allowances function within their valid period
+
+    // Verify subsidy with one-off allowance
+    let result =
+        call_subsidize_with_allowance_and_play(&mut test_runner,
+                                               &bob,
+                                               escrow,
+                                               bob_pool_badge.clone(),
+                                               allowance_1off_nfgid.clone(),
+                                               dec!("10"),
+                                               play_resource_bob,
+                                               false,
+                                               true);
+    let receipt = result.expect_commit_success();
+    assert!(balance_change_amount(&receipt,
+                                  test_runner.get_component_vaults(bob.account, XRD),
+                                  XRD).is_zero(),
+            "Bob should have not paid the XRD fee");
+    assert!(balance_change_amount(&receipt,
+                                  test_runner.get_component_vaults(escrow, XRD),
+                                  XRD)
+            != Decimal::ZERO,
+            "Escrow should have paid the XRD fee");
+    // (verify that the 1-off allowance is now burned)
+    assert!(!get_component_nflids(&mut test_runner, bob.account, allowance_resaddr)
+            .contains(allowance_1off_nfgid.local_id()),
+            "This allowance should have been burned");
+    drop(result);
+
+    // Verify subsidy with accumulating allowance
+    for _ in 0..10 { // the 11th would fail
+        let result =
+            call_subsidize_with_allowance_and_play(&mut test_runner,
+                                                   &bob,
+                                                   escrow,
+                                                   bob_pool_badge.clone(),
+                                                   allowance_acc_nfgid.clone(),
+                                                   dec!("10"),
+                                                   play_resource_bob,
+                                                   false,
+                                                   true);
+        let receipt = result.expect_commit_success();
+        assert!(balance_change_amount(&receipt,
+                                      test_runner.get_component_vaults(bob.account, XRD),
+                                      XRD).is_zero(),
+                "Bob should have not paid the XRD fee");
+        assert!(balance_change_amount(&receipt,
+                                      test_runner.get_component_vaults(escrow, XRD),
+                                      XRD)
+                != Decimal::ZERO,
+                "Escrow should have paid the XRD fee");
+        drop(result);
+    }
+    // (verify that the Allowance is now burned)
+    assert!(!get_component_nflids(&mut test_runner, bob.account, allowance_resaddr)
+            .contains(allowance_acc_nfgid.local_id()),
+            "This allowance should have been burned");
+
+    
+    // Verify subsidy with repeating allowance
+    for _ in 0..100 {
+        let result =
+            call_subsidize_with_allowance_and_play(&mut test_runner,
+                                                   &bob,
+                                                   escrow,
+                                                   bob_pool_badge.clone(),
+                                                   allowance_rep_nfgid.clone(),
+                                                   dec!("10"),
+                                                   play_resource_bob,
+                                                   false,
+                                                   true);
+        let receipt = result.expect_commit_success();
+        assert!(balance_change_amount(&receipt,
+                                      test_runner.get_component_vaults(bob.account, XRD),
+                                      XRD).is_zero(),
+                "Bob should have not paid the XRD fee");
+        assert!(balance_change_amount(&receipt,
+                                      test_runner.get_component_vaults(escrow, XRD),
+                                      XRD)
+                != Decimal::ZERO,
+                "Escrow should have paid the XRD fee");
+        drop(result);
+    }
+
+
+    // Verify subsidy without max_amount
+    let result =
+        call_subsidize_with_allowance_and_play(&mut test_runner,
+                                               &bob,
+                                               escrow,
+                                               bob_pool_badge.clone(),
+                                               allowance_rep2_nfgid.clone(),
+                                               dec!("10"),
+                                               play_resource_bob,
+                                               false,
+                                               true);
+    let receipt = result.expect_commit_success();
+    assert!(balance_change_amount(&receipt,
+                                  test_runner.get_component_vaults(bob.account, XRD),
+                                  XRD).is_zero(),
+            "Bob should have not paid the XRD fee");
+    assert!(balance_change_amount(&receipt,
+                                  test_runner.get_component_vaults(escrow, XRD),
+                                  XRD)
+            != Decimal::ZERO,
+            "Escrow should have paid the XRD fee");
+    drop(result);
+
+    
+    // Verify that we cannot subsidize again (because of min_delay)
+    let receipt =
+        call_subsidize_with_allowance_and_play(&mut test_runner,
+                                               &bob,
+                                               escrow,
+                                               bob_pool_badge.clone(),
+                                               allowance_rep2_nfgid.clone(),
+                                               dec!("10"),
+                                               play_resource_bob,
+                                               false,
+                                               false);
+    receipt.expect_specific_failure(|error| {
+        if let RuntimeError::ApplicationError(ApplicationError::PanicMessage(msg)) = error {
+            msg.starts_with("2009 ")
+        } else {
+            false
+        }
+    });
+    drop(receipt);
+
+
+    // Verify that we can subsidize again after the min_delay is over
+    set_test_runner_clock(&mut test_runner, 720);
+
+    let result =
+        call_subsidize_with_allowance_and_play(&mut test_runner,
+                                               &bob,
+                                               escrow,
+                                               bob_pool_badge.clone(),
+                                               allowance_rep2_nfgid.clone(),
+                                               dec!("10"),
+                                               play_resource_bob,
+                                               false,
+                                               true);
+    let receipt = result.expect_commit_success();
+    assert!(balance_change_amount(&receipt,
+                                  test_runner.get_component_vaults(bob.account, XRD),
+                                  XRD).is_zero(),
+            "Bob should have not paid the XRD fee");
+    assert!(balance_change_amount(&receipt,
+                                  test_runner.get_component_vaults(escrow, XRD),
+                                  XRD)
+            != Decimal::ZERO,
+            "Escrow should have paid the XRD fee");
+    drop(result);
+
+
+    // Recreate those allowances that got burned
+    let allowance_1off_nfgid = call_mint_allowance(&mut test_runner,
+                                                   &alice,
+                                                   escrow,
+                                                   alice_pool_badge.clone(),
+                                                   Some(500),
+                                                   2,
+                                                   AllowanceLifeCycle::OneOff,
+                                                   XRD,
+                                                   Some(TokenQuantity::Fungible(dec!("100"))));
+
+    let allowance_acc_nfgid = call_mint_allowance(&mut test_runner,
+                                                  &alice,
+                                                  escrow,
+                                                  alice_pool_badge.clone(),
+                                                  Some(500),
+                                                  2,
+                                                  AllowanceLifeCycle::Accumulating,
+                                                  XRD,
+                                                  Some(TokenQuantity::Fungible(dec!("100"))));
+
+    // And give them to Bob
+    give_tokens(&mut test_runner,
+                &alice.account,
+                &alice.nfgid,
+                &bob.account,
+                &allowance_resaddr,
+                TokenQuantity::Fungible(dec!(2)));
 
     // Test that allowances fail after they are invalid
+    let receipt =
+        call_subsidize_with_allowance_and_play(&mut test_runner,
+                                               &bob,
+                                               escrow,
+                                               bob_pool_badge.clone(),
+                                               allowance_1off_nfgid.clone(),
+                                               dec!("10"),
+                                               play_resource_bob,
+                                               false,
+                                               false);
+    receipt.expect_specific_failure(|error| {
+        if let RuntimeError::ApplicationError(ApplicationError::PanicMessage(msg)) = error {
+            msg.starts_with("2011 ")
+        } else {
+            false
+        }
+    });
+    drop(receipt);
 
-
-    // Test allowances within their valid period
-
-    // Try to spend too much
+    let receipt =
+        call_subsidize_with_allowance_and_play(&mut test_runner,
+                                               &bob,
+                                               escrow,
+                                               bob_pool_badge.clone(),
+                                               allowance_acc_nfgid.clone(),
+                                               dec!("10"),
+                                               play_resource_bob,
+                                               false,
+                                               false);
+    receipt.expect_specific_failure(|error| {
+        if let RuntimeError::ApplicationError(ApplicationError::PanicMessage(msg)) = error {
+            msg.starts_with("2011 ")
+        } else {
+            false
+        }
+    });
+    drop(receipt);
     
-    // Test subsidy with one-off allowance
+    let receipt =
+        call_subsidize_with_allowance_and_play(&mut test_runner,
+                                               &bob,
+                                               escrow,
+                                               bob_pool_badge.clone(),
+                                               allowance_rep_nfgid.clone(),
+                                               dec!("10"),
+                                               play_resource_bob,
+                                               false,
+                                               false);
+    receipt.expect_specific_failure(|error| {
+        if let RuntimeError::ApplicationError(ApplicationError::PanicMessage(msg)) = error {
+            msg.starts_with("2011 ")
+        } else {
+            false
+        }
+    });
+    drop(receipt);
 
-    // Test subsidy with accumulating allowance
+
     
-    // Test subsidy with repeating allowance
-
-    // Test subdisy without max_amount
-
-    // Test that we cannot subsidize again (because of min_delay)
-    // Test that we can subsidize again after the min_delay is over
-
+    // Just as a control, verifies that we can do a normal subsidy
     let result =
         call_subsidize_and_play(&mut test_runner,
                                 &alice,
                                 escrow,
                                 alice_pool_badge.clone(),
                                 dec!("10"),
-                                play_resource);
+                                play_resource_alice);
 
-//    println!("FEE SUMMARY: {:?}", result.fee_summary);
-    assert!(balance_change_amount(&result, test_runner.get_component_vaults(alice.account, XRD), XRD).is_zero(),
+    assert!(balance_change_amount(&result,
+                                  test_runner.get_component_vaults(alice.account, XRD),
+                                  XRD).is_zero(),
             "Alice should have not paid the XRD fee");
-    assert!(balance_change_amount(&result, test_runner.get_component_vaults(escrow, XRD), XRD)
+    assert!(balance_change_amount(&result,
+                                  test_runner.get_component_vaults(escrow, XRD),
+                                  XRD)
             != Decimal::ZERO,
             "Escrow should have paid the XRD fee");
 }
+
+
+// TODO test automatic creation of NonFungible allowance on deposit
+
+// TODO test use allowance with NonFungible max_amount
