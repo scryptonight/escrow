@@ -1,4 +1,33 @@
 //!
+//! About error messages
+//!
+//! Many error messages that are produced on panics in this code are
+//! preceded with an error code, starting at error code 2000 for this
+//! project. They are there to make each error easily recognizable in
+//! the test suite so that I can easily test that a transaction that
+//! is intended to fail fails for the correct reason.
+//!
+//!
+//! When calling subsidize_with_allowance note the following:
+//!
+//! * If you're using an Accumulating allowance, that allowance will
+//! be reduced by the amount you specify in the function call
+//! regardless of how much actually gets spent on the subsidy. This is
+//! because the component cannot know how much in fees you actually
+//! end up paying. For example if you specify max 10 XRD in the
+//! function call and only 5 XRD gets spent, the allowance remaining
+//! amount is nevertheless reduced by 10 XRD.
+//!
+//! * Failed subsidized transactions will pull funds from your escrow
+//! pool but this will not be reflected in the Allowance itself since
+//! failed transactions cause no on-ledger changes apart from tx
+//! cost. This means that a malicious allowance holder for XRD can use
+//! it to drain your XRD by spamming failing transactions. For this
+//! reason only issue XRD allowances to parties you can trust to be
+//! honest. (This problem could be mitigated by introducing
+//! configuration parameters to allow/disallow subsidies but the
+//! current implementation is more intended to be a tech demo than a
+//! fully deployable product and so this has not been done.)
 //!
 //! Note use of TokenQuantity introduecs a possible cost unit limit
 //! problem when the IndexSet inside gets large. The current
@@ -151,7 +180,7 @@ mod escrow {
                             NonFungibleGlobalId::new(
                                 requestor.resource_address(),
                                 requestor.as_non_fungible().non_fungible_local_id())),
-                        "only trusted can request allowance");
+                        "2013 only trusted can request allowance");
                 let max_amount =
                     if funds.resource_address().is_fungible() {
                         TokenQuantity::Fungible(funds.amount())
@@ -560,6 +589,13 @@ mod escrow {
         /// The pool owner can add an entire resource, all tokens of
         /// which are trusted to receive automatically generated
         /// Allowances when calling deposit_funds.
+        ///
+        /// Note that if you add a fungible resource as trusted, trust
+        /// can be established by presenting proof for a very tiny
+        /// amount of tokens - down to the finest resolution of that
+        /// resource (e.g. 1e-18 tokens). If you want *everyone* to be
+        /// trusted then add XRD as a trusted resource and anyone can
+        /// present a valid Proof if they want to.
         pub fn add_trusted_resource(&mut self,
                                     owner: Proof,
                                     add_resource: ResourceAddress)
@@ -651,7 +687,7 @@ mod escrow {
                     let to_take = take_amount.unwrap_or_default()
                         + length_of_option_set(&take_nflids) - already_taken;
                     assert!(to_take <= max_amount.unwrap_or_default().into(),
-                            "insufficient allowance");
+                            "2012 insufficient allowance");
                 },
                 Some(TokenQuantity::Fungible(max_amount)) => {
                     assert!(take_amount.unwrap_or_default() + length_of_option_set(&take_nflids)

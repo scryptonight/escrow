@@ -4,6 +4,7 @@ use radix_engine::errors::*;
 use transaction::builder::ManifestBuilder;
 use radix_engine::transaction::{CommitResult, TransactionReceipt};
 use escrow::token_quantity::TokenQuantity;
+use radix_engine::blueprints::resource::NonFungibleVaultError;
 
 mod common;
 use common::{User, setup_for_test,
@@ -45,10 +46,21 @@ fn call_deposit_funds(test_runner: &mut DefaultTestRunner,
                       user: &User,
                       escrow: ComponentAddress,
                       owner: NonFungibleGlobalId,
+                      trusted_badge: Option<NonFungibleGlobalId>,
                       resource: ResourceAddress,
-                      amount: Decimal) -> CommitResult
+                      amount: Decimal,
+                      expect_success: bool) -> TransactionReceipt
 {
-    let manifest = ManifestBuilder::new()
+    let mut builder = ManifestBuilder::new();
+    if let Some(trusted_badge) = &trusted_badge {
+        builder = builder
+            .create_proof_from_account_of_non_fungibles(
+                user.account,
+                trusted_badge.resource_address(),
+                BTreeSet::from([trusted_badge.local_id().clone()]))
+            .pop_from_auth_zone("trusted_badge_proof")
+    }
+    let manifest = builder
         .withdraw_from_account(user.account,
                                resource,
                                amount)
@@ -61,19 +73,70 @@ fn call_deposit_funds(test_runner: &mut DefaultTestRunner,
             "deposit_funds",
             |lookup| manifest_args!(owner,
                                     lookup.bucket("funds_bucket"),
-                                    None::<ManifestProof>))
+                                    if trusted_badge.is_some() {
+                                        Some(lookup.proof("trusted_badge_proof"))
+                                    } else { None }))
+        .deposit_batch(user.account)
         .build();
     let receipt = test_runner.execute_manifest_ignoring_fee(
         manifest,
         vec![NonFungibleGlobalId::from_public_key(&user.pubkey)],
     );
 
-    if !receipt.is_commit_success() {
+    if receipt.is_commit_success() != expect_success {
         println!("{:?}", receipt);
-        panic!("TRANSACTION FAIL");
+        panic!("TRANSACTION BAD");
     }
 
-    receipt.expect_commit_success().clone()
+    receipt
+}
+
+fn call_deposit_funds_with_non_fungibles(test_runner: &mut DefaultTestRunner,
+                                         user: &User,
+                                         escrow: ComponentAddress,
+                                         owner: NonFungibleGlobalId,
+                                         trusted_badge: Option<NonFungibleGlobalId>,
+                                         resource: ResourceAddress,
+                                         nflids: BTreeSet<NonFungibleLocalId>,
+                                         expect_success: bool) -> TransactionReceipt
+{
+    let mut manifest = ManifestBuilder::new();
+    if let Some(trusted_badge) = &trusted_badge {
+        manifest = manifest
+            .create_proof_from_account_of_non_fungibles(
+                user.account,
+                trusted_badge.resource_address(),
+                BTreeSet::from([trusted_badge.local_id().clone()]))
+            .pop_from_auth_zone("trusted_badge_proof")
+    }
+    let manifest = manifest
+        .withdraw_non_fungibles_from_account(user.account,
+                                             resource,
+                                             nflids)
+        .take_all_from_worktop(
+            resource,
+            "funds_bucket")
+        .call_method_with_name_lookup(
+            escrow,
+            "deposit_funds",
+            |lookup| manifest_args!(owner,
+                                    lookup.bucket("funds_bucket"),
+                                    if trusted_badge.is_some() {
+                                        Some(lookup.proof("trusted_badge_proof"))
+                                    } else { None }))
+        .deposit_batch(user.account)
+        .build();
+    let receipt = test_runner.execute_manifest_ignoring_fee(
+        manifest,
+        vec![NonFungibleGlobalId::from_public_key(&user.pubkey)],
+    );
+
+    if receipt.is_commit_success() != expect_success {
+        println!("{:?}", receipt);
+        panic!("TRANSACTION BAD");
+    }
+
+    receipt
 }
 
 fn call_read_funds(test_runner: &mut DefaultTestRunner,
@@ -637,7 +700,7 @@ fn call_withdraw_with_allowance(test_runner: &mut DefaultTestRunner,
                                 escrow: ComponentAddress,
                                 allowance: &NonFungibleGlobalId,
                                 quantity: TokenQuantity,
-                                succeed: bool) -> CommitResult
+                                succeed: bool) -> TransactionReceipt
 {
     let manifest = ManifestBuilder::new()
         .withdraw_non_fungibles_from_account(
@@ -666,10 +729,225 @@ fn call_withdraw_with_allowance(test_runner: &mut DefaultTestRunner,
     }
 
     if succeed {
-        receipt.expect_commit_success().clone()
+        receipt.expect_commit_success();
     } else {
-        receipt.expect_commit_failure().clone()
+        receipt.expect_commit_failure();
     }
+    receipt.clone()
+}
+
+fn call_add_trusted_resource(test_runner: &mut DefaultTestRunner,
+                             user: &User,
+                             escrow: ComponentAddress,
+                             caller: &NonFungibleGlobalId,
+                             resource: ResourceAddress,
+                             succeed: bool) -> TransactionReceipt
+{
+    let manifest = ManifestBuilder::new()
+        .create_proof_from_account_of_non_fungibles(
+            user.account,
+            caller.resource_address(),
+            BTreeSet::from([caller.local_id().clone()]))
+        .pop_from_auth_zone("caller_proof")
+        .call_method_with_name_lookup(
+            escrow,
+            "add_trusted_resource",
+            |lookup| manifest_args!(lookup.proof("caller_proof"),
+                                    resource))
+        .build();
+    let receipt = test_runner.execute_manifest_ignoring_fee(
+        manifest,
+        vec![NonFungibleGlobalId::from_public_key(&user.pubkey)],
+    );
+
+    if receipt.is_commit_success() != succeed {
+        println!("{:?}", receipt);
+        panic!("TRANSACTION BAD");
+    }
+
+    if succeed {
+        receipt.expect_commit_success();
+    } else {
+        receipt.expect_commit_failure();
+    }
+    receipt.clone()
+}
+
+fn call_remove_trusted_resource(test_runner: &mut DefaultTestRunner,
+                                user: &User,
+                                escrow: ComponentAddress,
+                                caller: &NonFungibleGlobalId,
+                                resource: ResourceAddress,
+                                succeed: bool) -> TransactionReceipt
+{
+    let manifest = ManifestBuilder::new()
+        .create_proof_from_account_of_non_fungibles(
+            user.account,
+            caller.resource_address(),
+            BTreeSet::from([caller.local_id().clone()]))
+        .pop_from_auth_zone("caller_proof")
+        .call_method_with_name_lookup(
+            escrow,
+            "remove_trusted_resource",
+            |lookup| manifest_args!(lookup.proof("caller_proof"),
+                                    resource))
+        .build();
+    let receipt = test_runner.execute_manifest_ignoring_fee(
+        manifest,
+        vec![NonFungibleGlobalId::from_public_key(&user.pubkey)],
+    );
+
+    if receipt.is_commit_success() != succeed {
+        println!("{:?}", receipt);
+        panic!("TRANSACTION BAD");
+    }
+
+    if succeed {
+        receipt.expect_commit_success();
+    } else {
+        receipt.expect_commit_failure();
+    }
+    receipt.clone()
+}
+
+fn call_is_resource_trusted(test_runner: &mut DefaultTestRunner,
+                            user: &User,
+                            escrow: ComponentAddress,
+                            resource: ResourceAddress,
+                            succeed: bool) -> (TransactionReceipt, Option<bool>)
+{
+    let manifest = ManifestBuilder::new()
+        .call_method(
+            escrow,
+            "is_resource_trusted",
+            manifest_args!(resource))
+        .build();
+    let receipt = test_runner.execute_manifest_ignoring_fee(
+        manifest,
+        vec![NonFungibleGlobalId::from_public_key(&user.pubkey)],
+    );
+
+    if receipt.is_commit_success() != succeed {
+        println!("{:?}", receipt);
+        panic!("TRANSACTION BAD");
+    }
+
+    let answer;
+    if succeed {
+        let result = receipt.expect_commit_success();
+        answer = Some(result.output(1));
+    } else {
+        receipt.expect_commit_failure();
+        answer = None;
+    }
+    (receipt.clone(), answer)
+}
+
+fn call_add_trusted_nfgid(test_runner: &mut DefaultTestRunner,
+                          user: &User,
+                          escrow: ComponentAddress,
+                          caller: &NonFungibleGlobalId,
+                          nfgid: NonFungibleGlobalId,
+                          succeed: bool) -> TransactionReceipt
+{
+    let manifest = ManifestBuilder::new()
+        .create_proof_from_account_of_non_fungibles(
+            user.account,
+            caller.resource_address(),
+            BTreeSet::from([caller.local_id().clone()]))
+        .pop_from_auth_zone("caller_proof")
+        .call_method_with_name_lookup(
+            escrow,
+            "add_trusted_nfgid",
+            |lookup| manifest_args!(lookup.proof("caller_proof"),
+                                    nfgid))
+        .build();
+    let receipt = test_runner.execute_manifest_ignoring_fee(
+        manifest,
+        vec![NonFungibleGlobalId::from_public_key(&user.pubkey)],
+    );
+
+    if receipt.is_commit_success() != succeed {
+        println!("{:?}", receipt);
+        panic!("TRANSACTION BAD");
+    }
+
+    if succeed {
+        receipt.expect_commit_success();
+    } else {
+        receipt.expect_commit_failure();
+    }
+    receipt.clone()
+}
+
+fn call_remove_trusted_nfgid(test_runner: &mut DefaultTestRunner,
+                             user: &User,
+                             escrow: ComponentAddress,
+                             caller: &NonFungibleGlobalId,
+                             nfgid: NonFungibleGlobalId,
+                             succeed: bool) -> TransactionReceipt
+{
+    let manifest = ManifestBuilder::new()
+        .create_proof_from_account_of_non_fungibles(
+            user.account,
+            caller.resource_address(),
+            BTreeSet::from([caller.local_id().clone()]))
+        .pop_from_auth_zone("caller_proof")
+        .call_method_with_name_lookup(
+            escrow,
+            "remove_trusted_nfgid",
+            |lookup| manifest_args!(lookup.proof("caller_proof"),
+                                    nfgid))
+        .build();
+    let receipt = test_runner.execute_manifest_ignoring_fee(
+        manifest,
+        vec![NonFungibleGlobalId::from_public_key(&user.pubkey)],
+    );
+
+    if receipt.is_commit_success() != succeed {
+        println!("{:?}", receipt);
+        panic!("TRANSACTION BAD");
+    }
+
+    if succeed {
+        receipt.expect_commit_success();
+    } else {
+        receipt.expect_commit_failure();
+    }
+    receipt.clone()
+}
+
+fn call_is_nfgid_trusted(test_runner: &mut DefaultTestRunner,
+                         user: &User,
+                         escrow: ComponentAddress,
+                         nfgid: NonFungibleGlobalId,
+                         succeed: bool) -> (TransactionReceipt, Option<bool>)
+{
+    let manifest = ManifestBuilder::new()
+        .call_method(
+            escrow,
+            "is_nfgid_trusted",
+            manifest_args!(nfgid))
+        .build();
+    let receipt = test_runner.execute_manifest_ignoring_fee(
+        manifest,
+        vec![NonFungibleGlobalId::from_public_key(&user.pubkey)],
+    );
+
+    if receipt.is_commit_success() != succeed {
+        println!("{:?}", receipt);
+        panic!("TRANSACTION BAD");
+    }
+
+    let answer;
+    if succeed {
+        let result = receipt.expect_commit_success();
+        answer = Some(result.output(1));
+    } else {
+        receipt.expect_commit_failure();
+        answer = None;
+    }
+    (receipt.clone(), answer)
 }
 
 #[test]
@@ -707,31 +985,37 @@ fn test_deposit_funds() {
         NonFungibleGlobalId::new(badge_res, 1.into());
 
     // The first time, our pool entry is created
-    let result =
+    let receipt =
         call_deposit_funds(&mut test_runner,
                            &owner,
                            escrow,
                            owner_badge.clone(),
+                           None,
                            XRD,
-                           dec!("100"));
-
+                           dec!("100"),
+                           true);
+    let result = receipt.expect_commit_success();
     assert_eq!(dec!("100"),
-               balance_change_amount(&result, test_runner.get_component_vaults(escrow, XRD), XRD),
+               balance_change_amount(result, test_runner.get_component_vaults(escrow, XRD), XRD),
                "Component should be up 100 XRD");
+    drop(receipt);
 
 
     // The second time, our existing pool is reused
-    let result =
+    let receipt =
         call_deposit_funds(&mut test_runner,
                            &owner,
                            escrow,
                            owner_badge.clone(),
+                           None,
                            XRD,
-                           dec!("50"));
-
+                           dec!("50"),
+                           true);
+    let result = receipt.expect_commit_success();
     assert_eq!(dec!("50"),
-               balance_change_amount(&result, test_runner.get_component_vaults(escrow, XRD), XRD),
+               balance_change_amount(result, test_runner.get_component_vaults(escrow, XRD), XRD),
                "Component should be up 50 XRD");
+    drop(receipt);
 
     assert_eq!(dec!("150"),
                call_read_funds(&mut test_runner,
@@ -758,8 +1042,10 @@ fn test_withdraw() {
                        &owner,
                        escrow,
                        owner_badge.clone(),
+                       None,
                        XRD,
-                       dec!("100"));
+                       dec!("100"),
+                       true);
 
     let result =
         call_withdraw(&mut test_runner,
@@ -790,15 +1076,24 @@ fn test_withdraw_non_fungibles() {
         NonFungibleGlobalId::new(badge_res, 1.into());
 
     let nfts_res =
-        test_runner.create_non_fungible_resource(owner.account);
+        create_nft_resource(&mut test_runner,
+                            &owner,
+                            0,
+                            1000,
+                            None);
 
-    call_deposit_funds(&mut test_runner,
-                       &owner,
-                       escrow,
-                       owner_badge.clone(),
-                       nfts_res,
-                       dec!("3"));
+    for _ in 0..20 {
+        call_deposit_funds(&mut test_runner,
+                           &owner,
+                           escrow,
+                           owner_badge.clone(),
+                           None,
+                           nfts_res,
+                           dec!("50"),
+                           true);
+    }
 
+    // Verify withdraw with only named nflids
     let result =
         call_withdraw(&mut test_runner,
                       &owner,
@@ -810,11 +1105,65 @@ fn test_withdraw_non_fungibles() {
                           None));
 
     assert_eq!(dec!("-2"),
-               balance_change_amount(&result, test_runner.get_component_vaults(escrow, nfts_res), nfts_res),
+               balance_change_amount(&result,
+                                     test_runner.get_component_vaults(escrow, nfts_res),
+                                     nfts_res),
                "Escrow should be down 2 NFTs");
     assert_eq!(dec!("2"),
-               balance_change_amount(&result, test_runner.get_component_vaults(owner.account, nfts_res), nfts_res),
+               balance_change_amount(&result,
+                                     test_runner.get_component_vaults(owner.account, nfts_res),
+                                     nfts_res),
                "User should be up 2 NFTs");
+    drop(result);
+
+
+    // Verify withdraw with named nflids and amount
+    let result =
+        call_withdraw(&mut test_runner,
+                      &owner,
+                      escrow,
+                      owner_badge.clone(),
+                      nfts_res,
+                      TokenQuantity::NonFungible(
+                          Some([10.into(), 13.into()].into()),
+                          Some(10)));
+
+    assert_eq!(dec!("-12"),
+               balance_change_amount(&result,
+                                     test_runner.get_component_vaults(escrow, nfts_res),
+                                     nfts_res),
+               "Escrow should be down 12 NFTs");
+    assert_eq!(dec!("12"),
+               balance_change_amount(&result,
+                                     test_runner.get_component_vaults(owner.account, nfts_res),
+                                     nfts_res),
+               "User should be up 12 NFTs");
+    assert!(get_component_nflids(&mut test_runner, owner.account, nfts_res)
+            .is_superset(&[10.into(), 13.into()].into()),
+            "User should have the named nflids");
+
+    
+    // Verify withdraw with only amount
+    let result =
+        call_withdraw(&mut test_runner,
+                      &owner,
+                      escrow,
+                      owner_badge.clone(),
+                      nfts_res,
+                      TokenQuantity::NonFungible(
+                          None,
+                          Some(10)));
+
+    assert_eq!(dec!("-10"),
+               balance_change_amount(&result,
+                                     test_runner.get_component_vaults(escrow, nfts_res),
+                                     nfts_res),
+               "Escrow should be down 10 NFTs");
+    assert_eq!(dec!("10"),
+               balance_change_amount(&result,
+                                     test_runner.get_component_vaults(owner.account, nfts_res),
+                                     nfts_res),
+               "User should be up 10 NFTs");
 }
 
 #[test]
@@ -835,8 +1184,10 @@ fn test_withdraw_all_of() {
                        &owner,
                        escrow,
                        owner_badge.clone(),
+                       None,
                        XRD,
-                       dec!("100"));
+                       dec!("100"),
+                       true);
 
     let result =
         call_withdraw_all_of(&mut test_runner,
@@ -862,8 +1213,10 @@ fn test_withdraw_all_of() {
                        &owner,
                        escrow,
                        owner_badge.clone(),
+                       None,
                        nfts_res,
-                       dec!("3"));
+                       dec!("3"),
+                       true);
 
     let result =
         call_withdraw_all_of(&mut test_runner,
@@ -898,8 +1251,10 @@ fn test_subsidize() {
                        &owner,
                        escrow,
                        owner_badge.clone(),
+                       None,
                        XRD,
-                       dec!("100"));
+                       dec!("100"),
+                       true);
     
     let result =
         call_subsidize_and_play(&mut test_runner,
@@ -945,8 +1300,10 @@ fn test_subsidize_contingent() {
                        &owner,
                        escrow,
                        owner_badge.clone(),
+                       None,
                        XRD,
-                       dec!("100"));
+                       dec!("100"),
+                       true);
 
 
     // Test contingent fee on a successful tx manifest
@@ -1363,8 +1720,10 @@ fn test_withdraw_with_allowance_within_validity_period() {
                        &alice,
                        escrow,
                        alice_pool_badge.clone(),
+                       None,
                        play_resource,
-                       dec!("10000"));
+                       dec!("10000"),
+                       true);
 
     let allowance_1off_nfgid = call_mint_allowance(&mut test_runner,
                                                   &alice,
@@ -1464,33 +1823,41 @@ fn test_withdraw_with_allowance_within_validity_period() {
 
 
     // Test withdrawal with one-off allowance
-    let result = call_withdraw_with_allowance(
+    let receipt = call_withdraw_with_allowance(
         &mut test_runner,
         &bob,
         escrow,
         &allowance_1off_nfgid,
         TokenQuantity::Fungible(dec!("55")),
         true);
+    let result = receipt.expect_commit_ignore_outcome();
 
     assert_eq!(dec!("55"),
-               balance_change_amount(&result, test_runner.get_component_vaults(bob.account, play_resource), play_resource),
+               balance_change_amount(result,
+                                     test_runner.get_component_vaults(bob.account, play_resource),
+                                     play_resource),
                "Bob should be 55 funds up");
     assert_eq!(dec!("-1"),
-               balance_change_amount(&result, test_runner.get_component_vaults(bob.account, allowance_resaddr), allowance_resaddr),
+               balance_change_amount(result,
+                                     test_runner.get_component_vaults(bob.account, allowance_resaddr),
+                                     allowance_resaddr),
                "Bob's one-off allowance should be burnt");
 
 
     // Test withdrawal with accumulating allowance
-    let result = call_withdraw_with_allowance(
+    let receipt = call_withdraw_with_allowance(
         &mut test_runner,
         &bob,
         escrow,
         &allowance_acc_nfgid,
         TokenQuantity::Fungible(dec!("40")),
         true);
+    let result = receipt.expect_commit_ignore_outcome();
 
     assert_eq!(dec!("40"),
-               balance_change_amount(&result, test_runner.get_component_vaults(bob.account, play_resource), play_resource),
+               balance_change_amount(result,
+                                     test_runner.get_component_vaults(bob.account, play_resource),
+                                     play_resource),
                "Bob should be 40 funds up");
     let nfdata = test_runner.get_non_fungible_data::<AllowanceNfData>(
         allowance_resaddr,
@@ -1499,66 +1866,83 @@ fn test_withdraw_with_allowance_within_validity_period() {
                nfdata.max_amount.unwrap().to_amount(),
                "Accumulating allowance should be down 40 tokens");
 
-    let result = call_withdraw_with_allowance(
+    let receipt = call_withdraw_with_allowance(
         &mut test_runner,
         &bob,
         escrow,
         &allowance_acc_nfgid,
         TokenQuantity::Fungible(dec!("60")),
         true);
+    let result = receipt.expect_commit_ignore_outcome();
     assert_eq!(dec!("60"),
-               balance_change_amount(&result, test_runner.get_component_vaults(bob.account, play_resource), play_resource),
+               balance_change_amount(result,
+                                     test_runner.get_component_vaults(bob.account, play_resource),
+                                     play_resource),
                "Bob should be 60 funds up");
     assert_eq!(dec!("-1"),
-               balance_change_amount(&result, test_runner.get_component_vaults(bob.account, allowance_resaddr), allowance_resaddr),
+               balance_change_amount(result,
+                                     test_runner.get_component_vaults(bob.account, allowance_resaddr),
+                                     allowance_resaddr),
                "Bob's accumulating allowance should be burnt");
 
 
     // Test withdrawal with repeating allowance
-    let result = call_withdraw_with_allowance(
+    let receipt = call_withdraw_with_allowance(
         &mut test_runner,
         &bob,
         escrow,
         &allowance_rep_nfgid,
         TokenQuantity::Fungible(dec!("10")),
         true);
+    let result = receipt.expect_commit_ignore_outcome();
     assert_eq!(dec!("10"),
-               balance_change_amount(&result, test_runner.get_component_vaults(bob.account, play_resource), play_resource),
+               balance_change_amount(result,
+                                     test_runner.get_component_vaults(bob.account, play_resource),
+                                     play_resource),
                "Bob should be 10 funds up");
 
-    let result = call_withdraw_with_allowance(
+    let receipt = call_withdraw_with_allowance(
         &mut test_runner,
         &bob,
         escrow,
         &allowance_rep_nfgid,
         TokenQuantity::Fungible(dec!("100")),
         true);
+    let result = receipt.expect_commit_ignore_outcome();
     assert_eq!(dec!("100"),
-               balance_change_amount(&result, test_runner.get_component_vaults(bob.account, play_resource), play_resource),
+               balance_change_amount(result,
+                                     test_runner.get_component_vaults(bob.account, play_resource),
+                                     play_resource),
                "Bob should be 100 funds up");
 
-    let result = call_withdraw_with_allowance(
+    let receipt = call_withdraw_with_allowance(
         &mut test_runner,
         &bob,
         escrow,
         &allowance_rep_nfgid,
         TokenQuantity::Fungible(dec!("100")),
         true);
+    let result = receipt.expect_commit_ignore_outcome();
     assert_eq!(dec!("100"),
-               balance_change_amount(&result, test_runner.get_component_vaults(bob.account, play_resource), play_resource),
+               balance_change_amount(result,
+                                     test_runner.get_component_vaults(bob.account, play_resource),
+                                     play_resource),
                "Bob should be 100 funds up");
 
 
     // Test withdrawal without max_amount
-    let result = call_withdraw_with_allowance(
+    let receipt = call_withdraw_with_allowance(
         &mut test_runner,
         &bob,
         escrow,
         &allowance_rep2_nfgid,
         TokenQuantity::Fungible(dec!("1000")),
         true);
+    let result = receipt.expect_commit_ignore_outcome();
     assert_eq!(dec!("1000"),
-               balance_change_amount(&result, test_runner.get_component_vaults(bob.account, play_resource), play_resource),
+               balance_change_amount(result,
+                                     test_runner.get_component_vaults(bob.account, play_resource),
+                                     play_resource),
                "Bob should be 1000 funds up");
 
     // Test that we cannot withdraw again (because of min_delay)
@@ -1574,15 +1958,18 @@ fn test_withdraw_with_allowance_within_validity_period() {
     set_test_runner_clock(&mut test_runner, 900);
 
     // Test that we can withdraw again after the min_delay is over
-    let result = call_withdraw_with_allowance(
+    let receipt = call_withdraw_with_allowance(
         &mut test_runner,
         &bob,
         escrow,
         &allowance_rep2_nfgid,
         TokenQuantity::Fungible(dec!("100")),
         true);
+    let result = receipt.expect_commit_ignore_outcome();
     assert_eq!(dec!("100"),
-               balance_change_amount(&result, test_runner.get_component_vaults(bob.account, play_resource), play_resource),
+               balance_change_amount(result,
+                                     test_runner.get_component_vaults(bob.account, play_resource),
+                                     play_resource),
                "Bob should be 100 funds up");
 }
 
@@ -1605,8 +1992,10 @@ fn test_withdraw_with_allowance_fails_outside_vailidity_period() {
                        &alice,
                        escrow,
                        alice_pool_badge.clone(),
+                       None,
                        play_resource,
-                       dec!("10000"));
+                       dec!("10000"),
+                       true);
 
     let allowance_1off_nfgid = call_mint_allowance(&mut test_runner,
                                                   &alice,
@@ -1758,28 +2147,38 @@ fn test_withdraw_non_fungibles_with_allowance_within_validity_period() {
                            &alice,
                            escrow,
                            alice_pool_badge.clone(),
+                           None,
                            play_resource,
-                           dec!("50"));
+                           dec!("50"),
+                           true);
         call_deposit_funds(&mut test_runner,
                            &alice,
                            escrow,
                            alice_pool_badge.clone(),
+                           None,
                            play_resource,
-                           dec!("50"));
+                           dec!("50"),
+                           true);
         call_deposit_funds(&mut test_runner,
                            &alice,
                            escrow,
                            alice_pool_badge.clone(),
+                           None,
                            play_resource,
-                           dec!("50"));
+                           dec!("50"),
+                           true);
         call_deposit_funds(&mut test_runner,
                            &alice,
                            escrow,
                            alice_pool_badge.clone(),
+                           None,
                            play_resource,
-                           dec!("50"));
+                           dec!("50"),
+                           true);
     }
 
+    // These allowances use Fungible allowance spec to pull
+    // non-fungible resources.
 
     let allowance_1off_nfgid = call_mint_allowance(&mut test_runner,
                                                    &alice,
@@ -1884,7 +2283,7 @@ fn test_withdraw_non_fungibles_with_allowance_within_validity_period() {
 
 
     // Test withdrawal with one-off allowance
-    let result = call_withdraw_with_allowance(
+    let receipt = call_withdraw_with_allowance(
         &mut test_runner,
         &bob,
         escrow,
@@ -1893,17 +2292,22 @@ fn test_withdraw_non_fungibles_with_allowance_within_validity_period() {
             Some(to_nflids(1..6)),
             None),
         true);
+    let result = receipt.expect_commit_ignore_outcome();
 
     assert_eq!(dec!("5"),
-               balance_change_amount(&result, test_runner.get_component_vaults(bob.account, play_resource), play_resource),
+               balance_change_amount(result,
+                                     test_runner.get_component_vaults(bob.account, play_resource),
+                                     play_resource),
                "Bob should be 5 NFTs up");
     assert_eq!(dec!("-1"),
-               balance_change_amount(&result, test_runner.get_component_vaults(bob.account, allowance_resaddr), allowance_resaddr),
+               balance_change_amount(result,
+                                     test_runner.get_component_vaults(bob.account, allowance_resaddr),
+                                     allowance_resaddr),
                "Bob's one-off allowance should be burnt");
 
 
     // Test withdrawal with accumulating allowance
-    let result = call_withdraw_with_allowance(
+    let receipt = call_withdraw_with_allowance(
         &mut test_runner,
         &bob,
         escrow,
@@ -1912,9 +2316,12 @@ fn test_withdraw_non_fungibles_with_allowance_within_validity_period() {
             Some(to_nflids(11..15)),
             None),
         true);
+    let result = receipt.expect_commit_ignore_outcome();
 
     assert_eq!(dec!("4"),
-               balance_change_amount(&result, test_runner.get_component_vaults(bob.account, play_resource), play_resource),
+               balance_change_amount(result,
+                                     test_runner.get_component_vaults(bob.account, play_resource),
+                                     play_resource),
                "Bob should be 4 NFTs up");
     let nfdata = test_runner.get_non_fungible_data::<AllowanceNfData>(
         allowance_resaddr,
@@ -1923,7 +2330,7 @@ fn test_withdraw_non_fungibles_with_allowance_within_validity_period() {
                nfdata.max_amount.unwrap().to_amount(),
                "Accumulating allowance should be down 4 NFTs");
 
-    let result = call_withdraw_with_allowance(
+    let receipt = call_withdraw_with_allowance(
         &mut test_runner,
         &bob,
         escrow,
@@ -1932,16 +2339,21 @@ fn test_withdraw_non_fungibles_with_allowance_within_validity_period() {
             Some(to_nflids(15..21)),
             None),
         true);
+    let result = receipt.expect_commit_ignore_outcome();
     assert_eq!(dec!("6"),
-               balance_change_amount(&result, test_runner.get_component_vaults(bob.account, play_resource), play_resource),
+               balance_change_amount(result,
+                                     test_runner.get_component_vaults(bob.account, play_resource),
+                                     play_resource),
                "Bob should be 6 NFTs up");
     assert_eq!(dec!("-1"),
-               balance_change_amount(&result, test_runner.get_component_vaults(bob.account, allowance_resaddr), allowance_resaddr),
+               balance_change_amount(result,
+                                     test_runner.get_component_vaults(bob.account, allowance_resaddr),
+                                     allowance_resaddr),
                "Bob's accumulating allowance should be burnt");
 
 
     // Test withdrawal with repeating allowance
-    let result = call_withdraw_with_allowance(
+    let receipt = call_withdraw_with_allowance(
         &mut test_runner,
         &bob,
         escrow,
@@ -1950,11 +2362,14 @@ fn test_withdraw_non_fungibles_with_allowance_within_validity_period() {
             Some(to_nflids(801..805)),
             None),
         true);
+    let result = receipt.expect_commit_ignore_outcome();
     assert_eq!(dec!("4"),
-               balance_change_amount(&result, test_runner.get_component_vaults(bob.account, play_resource), play_resource),
+               balance_change_amount(result,
+                                     test_runner.get_component_vaults(bob.account, play_resource),
+                                     play_resource),
                "Bob should be 4 NFTs up");
 
-    let result = call_withdraw_with_allowance(
+    let receipt = call_withdraw_with_allowance(
         &mut test_runner,
         &bob,
         escrow,
@@ -1963,11 +2378,14 @@ fn test_withdraw_non_fungibles_with_allowance_within_validity_period() {
             Some(to_nflids(811..821).into()),
             None),
         true);
+    let result = receipt.expect_commit_ignore_outcome();
     assert_eq!(dec!("10"),
-               balance_change_amount(&result, test_runner.get_component_vaults(bob.account, play_resource), play_resource),
+               balance_change_amount(result,
+                                     test_runner.get_component_vaults(bob.account, play_resource),
+                                     play_resource),
                "Bob should be 10 NFTs up");
 
-    let result = call_withdraw_with_allowance(
+    let receipt = call_withdraw_with_allowance(
         &mut test_runner,
         &bob,
         escrow,
@@ -1976,13 +2394,16 @@ fn test_withdraw_non_fungibles_with_allowance_within_validity_period() {
             Some(to_nflids(821..831)),
             None),
         true);
+    let result = receipt.expect_commit_ignore_outcome();
     assert_eq!(dec!("10"),
-               balance_change_amount(&result, test_runner.get_component_vaults(bob.account, play_resource), play_resource),
+               balance_change_amount(result,
+                                     test_runner.get_component_vaults(bob.account, play_resource),
+                                     play_resource),
                "Bob should be 10 NFTs up");
 
 
     // Test withdrawal without max_amount
-    let result = call_withdraw_with_allowance(
+    let receipt = call_withdraw_with_allowance(
         &mut test_runner,
         &bob,
         escrow,
@@ -1991,8 +2412,11 @@ fn test_withdraw_non_fungibles_with_allowance_within_validity_period() {
             Some(to_nflids(701..801)),
             None),
         true);
+    let result = receipt.expect_commit_ignore_outcome();
     assert_eq!(dec!("100"),
-               balance_change_amount(&result, test_runner.get_component_vaults(bob.account, play_resource), play_resource),
+               balance_change_amount(result,
+                                     test_runner.get_component_vaults(bob.account, play_resource),
+                                     play_resource),
                "Bob should be 100 NFTs up");
 
     // Test that we cannot withdraw again (because of min_delay)
@@ -2010,7 +2434,7 @@ fn test_withdraw_non_fungibles_with_allowance_within_validity_period() {
     set_test_runner_clock(&mut test_runner, 900);
 
     // Test that we can withdraw again after the min_delay is over
-    let result = call_withdraw_with_allowance(
+    let receipt = call_withdraw_with_allowance(
         &mut test_runner,
         &bob,
         escrow,
@@ -2019,9 +2443,365 @@ fn test_withdraw_non_fungibles_with_allowance_within_validity_period() {
             Some(to_nflids(501..601)),
             None),
         true);
+    let result = receipt.expect_commit_ignore_outcome();
     assert_eq!(dec!("100"),
-               balance_change_amount(&result, test_runner.get_component_vaults(bob.account, play_resource), play_resource),
+               balance_change_amount(result,
+                                     test_runner.get_component_vaults(bob.account, play_resource),
+                                     play_resource),
                "Bob should be 100 NFTs up");
+
+    
+
+    // Set up NonFungible allowance spec and use them to withdraw
+    // non-fungibles.
+
+    let allowance_1off_nfgid = call_mint_allowance(&mut test_runner,
+                                                   &alice,
+                                                   escrow,
+                                                   alice_pool_badge.clone(),
+                                                   None,
+                                                   0,
+                                                   AllowanceLifeCycle::OneOff,
+                                                   play_resource,
+                                                   Some(TokenQuantity::NonFungible(
+                                                       Some([650.into(), 651.into()].into()),
+                                                       Some(10))));
+
+    let allowance_acc_nfgid = call_mint_allowance(&mut test_runner,
+                                                  &alice,
+                                                  escrow,
+                                                  alice_pool_badge.clone(),
+                                                  None,
+                                                  0,
+                                                  AllowanceLifeCycle::Accumulating,
+                                                  play_resource,
+                                                   Some(TokenQuantity::NonFungible(
+                                                       Some([660.into(), 661.into()].into()),
+                                                       Some(10))));
+    
+    let allowance_rep_nfgid = call_mint_allowance(&mut test_runner,
+                                                  &alice,
+                                                  escrow,
+                                                  alice_pool_badge.clone(),
+                                                  None,
+                                                  0,
+                                                  AllowanceLifeCycle::Repeating{
+                                                      min_delay: None},
+                                                  play_resource,
+                                                   Some(TokenQuantity::NonFungible(
+                                                       Some([670.into(), 671.into()].into()),
+                                                       Some(10))));
+
+    // Bob gets all these allowances from Alice
+    give_tokens(&mut test_runner,
+                &alice.account,
+                &alice.nfgid,
+                &bob.account,
+                &allowance_resaddr,
+                TokenQuantity::Fungible(dec!(3)));
+
+    // Pull out the named NFTs above so they don't randomly get pulled
+    // as the arbitrary part of a withdraw. We will put them back in
+    // when they are needed for a test.
+    call_withdraw(&mut test_runner,
+                  &alice,
+                  escrow,
+                  alice_pool_badge.clone(),
+                  play_resource,
+                  TokenQuantity::NonFungible(
+                      Some([650.into(), 651.into(),
+                            660.into(), 661.into(),
+                            670.into(), 671.into()].into()),
+                      None));
+
+    call_deposit_funds_with_non_fungibles(&mut test_runner,
+                                          &alice,
+                                          escrow,
+                                          alice_pool_badge.clone(),
+                                          None,
+                                          play_resource,
+                                          [650.into(), 651.into()].into(),
+                                          true);
+
+    // Verify that we can't pull 12 randos just because the allowance
+    // is for 2 + 10
+    let receipt = call_withdraw_with_allowance(
+        &mut test_runner,
+        &bob,
+        escrow,
+        &allowance_1off_nfgid,
+        TokenQuantity::NonFungible(
+            None,
+            Some(12)),
+        false);
+    receipt.expect_specific_failure(|error| {
+        if let RuntimeError::ApplicationError(ApplicationError::PanicMessage(msg)) = error {
+            msg.starts_with("2012 ")
+        } else {
+            false
+        }
+    });
+    drop(receipt);
+
+    // Verify that we can't pull 10 randos and a named NFT that isn't
+    // named in the allowance
+    let receipt = call_withdraw_with_allowance(
+        &mut test_runner,
+        &bob,
+        escrow,
+        &allowance_1off_nfgid,
+        TokenQuantity::NonFungible(
+            Some([652.into()].into()),
+            Some(10)),
+        false);
+    receipt.expect_specific_failure(|error| {
+        if let RuntimeError::ApplicationError(ApplicationError::PanicMessage(msg)) = error {
+            msg.starts_with("2012 ")
+        } else {
+            false
+        }
+    });
+    drop(receipt);
+    
+    // Verify that we can pull 12 when two of them are our named ones
+    let receipt = call_withdraw_with_allowance(
+        &mut test_runner,
+        &bob,
+        escrow,
+        &allowance_1off_nfgid,
+        TokenQuantity::NonFungible(
+            Some([650.into(), 651.into()].into()),
+            Some(10)),
+        true);
+    let result = receipt.expect_commit_ignore_outcome();
+    assert_eq!(dec!("12"),
+               balance_change_amount(result,
+                                     test_runner.get_component_vaults(bob.account, play_resource),
+                                     play_resource),
+               "Bob should be 12 NFTs up");
+    assert!(get_component_nflids(&mut test_runner, bob.account, play_resource)
+            .is_superset(&[650.into(), 651.into()].into()),
+            "Bob should have the named nflids");
+    assert!(!get_component_nflids(&mut test_runner, bob.account, allowance_resaddr)
+            .contains(allowance_1off_nfgid.local_id()),
+            "This allowance should have been burned");
+    drop(receipt);
+
+
+    
+    // Verify accumulating allowance lifecycle
+    
+    call_deposit_funds_with_non_fungibles(&mut test_runner,
+                                          &alice,
+                                          escrow,
+                                          alice_pool_badge.clone(),
+                                          None,
+                                          play_resource,
+                                          [660.into()].into(),
+                                          true);
+
+    let receipt = call_withdraw_with_allowance(
+        &mut test_runner,
+        &bob,
+        escrow,
+        &allowance_acc_nfgid,
+        TokenQuantity::NonFungible(
+            Some([660.into()].into()),
+            Some(10)),
+        true);
+    let result = receipt.expect_commit_ignore_outcome();
+    assert_eq!(dec!("11"),
+               balance_change_amount(result,
+                                     test_runner.get_component_vaults(bob.account, play_resource),
+                                     play_resource),
+               "Bob should be 11 NFTs up");
+    assert!(get_component_nflids(&mut test_runner, bob.account, play_resource)
+            .is_superset(&[660.into()].into()),
+            "Bob should have the named nflid");
+    drop(receipt);
+
+    // Bob gives back #660 to see if he can snag it again (he
+    // shouldn't be able to since he spent all his randos and it's no
+    // longer in his named allowance)
+    call_deposit_funds_with_non_fungibles(&mut test_runner,
+                                          &bob,
+                                          escrow,
+                                          alice_pool_badge.clone(),
+                                          None,
+                                          play_resource,
+                                          [660.into()].into(),
+                                          true);
+    let receipt = call_withdraw_with_allowance(
+        &mut test_runner,
+        &bob,
+        escrow,
+        &allowance_acc_nfgid,
+        TokenQuantity::NonFungible(
+            Some([660.into()].into()),
+            None),
+        false);
+    receipt.expect_specific_failure(|error| {
+        if let RuntimeError::ApplicationError(ApplicationError::PanicMessage(msg)) = error {
+            msg.starts_with("2012 ")
+        } else {
+            false
+        }
+    });
+    drop(receipt);
+
+    // Bob tries to get a random NFT but he's out of randos
+    let receipt = call_withdraw_with_allowance(
+        &mut test_runner,
+        &bob,
+        escrow,
+        &allowance_acc_nfgid,
+        TokenQuantity::NonFungible(
+            None,
+            Some(1)),
+        false);
+    receipt.expect_specific_failure(|error| {
+        if let RuntimeError::ApplicationError(ApplicationError::PanicMessage(msg)) = error {
+            msg.starts_with("2012 ")
+        } else {
+            false
+        }
+    });
+    drop(receipt);
+    
+    // Bob tries to get the final NFT #661 but it's not there
+    let receipt = call_withdraw_with_allowance(
+        &mut test_runner,
+        &bob,
+        escrow,
+        &allowance_acc_nfgid,
+        TokenQuantity::NonFungible(
+            Some([661.into()].into()),
+            None),
+        false);
+    receipt.expect_specific_failure(|error| {
+        if let RuntimeError::ApplicationError(ApplicationError::NonFungibleVaultError(
+            NonFungibleVaultError::MissingId(id))) = error {
+            *id == 661.into()
+        } else {
+            false
+        }
+    });
+    drop(receipt);
+
+    // Alice deposits #661 so that Bob can finish up
+    call_deposit_funds_with_non_fungibles(&mut test_runner,
+                                          &alice,
+                                          escrow,
+                                          alice_pool_badge.clone(),
+                                          None,
+                                          play_resource,
+                                          [661.into()].into(),
+                                          true);
+
+    // And finally Bob gets the last one
+    let receipt = call_withdraw_with_allowance(
+        &mut test_runner,
+        &bob,
+        escrow,
+        &allowance_acc_nfgid,
+        TokenQuantity::NonFungible(
+            Some([661.into()].into()),
+            None),
+        true);
+    let result = receipt.expect_commit_ignore_outcome();
+    assert_eq!(dec!("1"),
+               balance_change_amount(result,
+                                     test_runner.get_component_vaults(bob.account, play_resource),
+                                     play_resource),
+               "Bob should be 1 NFT up");
+    assert!(get_component_nflids(&mut test_runner, bob.account, play_resource)
+            .is_superset(&[661.into()].into()),
+            "Bob should have the named nflid");
+    assert!(!get_component_nflids(&mut test_runner, bob.account, allowance_resaddr)
+            .contains(allowance_acc_nfgid.local_id()),
+            "This allowance should have been burned");
+    drop(receipt);
+
+
+    // Verify repeating allowance lifecycle
+    
+    call_deposit_funds_with_non_fungibles(&mut test_runner,
+                                          &alice,
+                                          escrow,
+                                          alice_pool_badge.clone(),
+                                          None,
+                                          play_resource,
+                                          [670.into(), 671.into()].into(),
+                                          true);
+
+    let receipt = call_withdraw_with_allowance(
+        &mut test_runner,
+        &bob,
+        escrow,
+        &allowance_rep_nfgid,
+        TokenQuantity::NonFungible(
+            Some([670.into(), 671.into()].into()),
+            Some(5)),
+        true);
+    let result = receipt.expect_commit_ignore_outcome();
+    assert_eq!(dec!("7"),
+               balance_change_amount(result,
+                                     test_runner.get_component_vaults(bob.account, play_resource),
+                                     play_resource),
+               "Bob should be 7 NFTs up");
+    assert!(get_component_nflids(&mut test_runner, bob.account, play_resource)
+            .is_superset(&[670.into(), 671.into()].into()),
+            "Bob should have the named nflids");
+    drop(receipt);
+
+    
+    let receipt = call_withdraw_with_allowance(
+        &mut test_runner,
+        &bob,
+        escrow,
+        &allowance_rep_nfgid,
+        TokenQuantity::NonFungible(
+            None,
+            Some(10)),
+        true);
+    let result = receipt.expect_commit_ignore_outcome();
+    assert_eq!(dec!("10"),
+               balance_change_amount(result,
+                                     test_runner.get_component_vaults(bob.account, play_resource),
+                                     play_resource),
+               "Bob should be 10 NFTs up");
+    drop(receipt);
+
+
+    // Verify that Bob can withdraw the named ones again
+    call_deposit_funds_with_non_fungibles(&mut test_runner,
+                                          &bob,
+                                          escrow,
+                                          alice_pool_badge.clone(),
+                                          None,
+                                          play_resource,
+                                          [670.into(), 671.into()].into(),
+                                          true);
+
+    let receipt = call_withdraw_with_allowance(
+        &mut test_runner,
+        &bob,
+        escrow,
+        &allowance_rep_nfgid,
+        TokenQuantity::NonFungible(
+            Some([670.into(), 671.into()].into()),
+            Some(10)),
+        true);
+    let result = receipt.expect_commit_ignore_outcome();
+    assert_eq!(dec!("12"),
+               balance_change_amount(result,
+                                     test_runner.get_component_vaults(bob.account, play_resource),
+                                     play_resource),
+               "Bob should be 12 NFTs up");
+    assert!(get_component_nflids(&mut test_runner, bob.account, play_resource)
+            .is_superset(&[670.into(), 671.into()].into()),
+            "Bob should have the named nflids");
+    drop(receipt);
 }
 
 
@@ -2050,8 +2830,10 @@ fn test_withdraw_non_fungibles_with_allowance_fails_outside_validity_period() {
                            &alice,
                            escrow,
                            alice_pool_badge.clone(),
+                           None,
                            play_resource,
-                           dec!("50"));
+                           dec!("50"),
+                           true);
     }
 
     for _ in 0..5 {
@@ -2059,8 +2841,10 @@ fn test_withdraw_non_fungibles_with_allowance_fails_outside_validity_period() {
                            &alice,
                            escrow,
                            alice_pool_badge.clone(),
+                           None,
                            play_resource,
-                           dec!("50"));
+                           dec!("50"),
+                           true);
     }
 
     for _ in 0..5 {
@@ -2068,8 +2852,10 @@ fn test_withdraw_non_fungibles_with_allowance_fails_outside_validity_period() {
                            &alice,
                            escrow,
                            alice_pool_badge.clone(),
+                           None,
                            play_resource,
-                           dec!("50"));
+                           dec!("50"),
+                           true);
     }
     
     for _ in 0..5 {
@@ -2077,8 +2863,10 @@ fn test_withdraw_non_fungibles_with_allowance_fails_outside_validity_period() {
                            &alice,
                            escrow,
                            alice_pool_badge.clone(),
+                           None,
                            play_resource,
-                           dec!("50"));
+                           dec!("50"),
+                           true);
     }
 
 
@@ -2247,8 +3035,10 @@ fn test_subsidize_with_allowance() {
                        &alice,
                        escrow,
                        alice_pool_badge.clone(),
+                       None,
                        XRD,
-                       dec!("9000"));
+                       dec!("9000"),
+                       true);
 
     let allowance_1off_nfgid = call_mint_allowance(&mut test_runner,
                                                    &alice,
@@ -2692,6 +3482,504 @@ fn test_subsidize_with_allowance() {
 }
 
 
-// TODO test automatic creation of NonFungible allowance on deposit
+// Tests the generation of automatic allowance for trusted agents that
+// deposit funds into an escrow pool.
+#[test]
+fn test_automatic_allowance() {
+    let (mut test_runner, alice, package) = setup_for_test();
 
-// TODO test use allowance with NonFungible max_amount
+    let escrow = call_instantiate(&mut test_runner, &alice, package);
+
+    let alice_pool_res =
+        test_runner.create_non_fungible_resource(alice.account);
+    let alice_pool_badge =
+        NonFungibleGlobalId::new(alice_pool_res, 1.into());
+
+    let play_resource_nf =
+        create_nft_resource(&mut test_runner, &alice, 0, 1000, None);
+    let play_resource_f =
+        test_runner.create_fungible_resource(dec!("10000"), 18, alice.account);
+
+    let bob = make_user(&mut test_runner, Some(&"Bob".to_owned()));
+    let bob_id_res_1 =
+        test_runner.create_non_fungible_resource(bob.account);
+    let bob_id_badge_1_1_trusted =
+        NonFungibleGlobalId::new(bob_id_res_1, 1.into());
+    let bob_id_badge_1_2_untrusted =
+        NonFungibleGlobalId::new(bob_id_res_1, 2.into());
+    let bob_id_res_2_trusted =
+        test_runner.create_non_fungible_resource(bob.account);
+    let bob_id_badge_2_1 =
+        NonFungibleGlobalId::new(bob_id_res_2_trusted, 1.into());
+
+    // Put some of Alice's play tokens into her pool
+    let receipt =
+        call_deposit_funds(&mut test_runner,
+                           &alice,
+                           escrow,
+                           alice_pool_badge.clone(),
+                           None,
+                           play_resource_f,
+                           dec!(5000),
+                           true);
+    // This also creates the pool so let's remember its Allowance
+    // resource address.
+    let result = receipt.expect_commit_success();
+    let alice_pool_allowance_resource = result.new_resource_addresses()[0];
+    drop(receipt);
+    
+    // Pool takes NFTs #0..#499 inclusive
+    for n in 0..10 {
+        call_deposit_funds_with_non_fungibles(
+            &mut test_runner,
+            &alice,
+            escrow,
+            alice_pool_badge.clone(),
+            None,
+            play_resource_nf,
+            (n*50 .. n*50+50).map(|v|v.into()).collect(),
+            true);
+    }
+
+    // Give the rest to Bob
+    give_tokens(&mut test_runner,
+                &alice.account,
+                &alice.nfgid,
+                &bob.account,
+                &play_resource_f,
+                TokenQuantity::Fungible(dec!(5000)));
+    // Bob takes NFTs #500..#999 inclusive
+    for _ in 0..10 {
+        give_tokens(&mut test_runner,
+                    &alice.account,
+                    &alice.nfgid,
+                    &bob.account,
+                    &play_resource_nf,
+                    TokenQuantity::Fungible(dec!(50)));
+    }
+
+
+    // Verify that without trust yet, Bob can't get allowances
+
+    // (non-trusted nfgid, non-fungible play resource)
+    let receipt =
+        call_deposit_funds_with_non_fungibles(
+            &mut test_runner,
+            &bob,
+            escrow,
+            alice_pool_badge.clone(),
+            Some(bob_id_badge_1_1_trusted.clone()),
+            play_resource_nf,
+            [500.into()].into(),
+            false);
+    receipt.expect_specific_failure(|error| {
+        if let RuntimeError::ApplicationError(ApplicationError::PanicMessage(msg)) = error {
+            msg.starts_with("2013 ")
+        } else {
+            false
+        }
+    });
+    drop(receipt);
+    
+    // (non-trusted resource, non-fungible play resource)
+    let receipt =
+        call_deposit_funds_with_non_fungibles(
+            &mut test_runner,
+            &bob,
+            escrow,
+            alice_pool_badge.clone(),
+            Some(bob_id_badge_2_1.clone()),
+            play_resource_nf,
+            [500.into()].into(),
+            false);
+    receipt.expect_specific_failure(|error| {
+        if let RuntimeError::ApplicationError(ApplicationError::PanicMessage(msg)) = error {
+            msg.starts_with("2013 ")
+        } else {
+            false
+        }
+    });
+    drop(receipt);
+    
+    // (non-trusted nfgid, fungible play resource)
+    let receipt =
+        call_deposit_funds(
+            &mut test_runner,
+            &bob,
+            escrow,
+            alice_pool_badge.clone(),
+            Some(bob_id_badge_1_1_trusted.clone()),
+            play_resource_f,
+            dec!(10),
+            false);
+    receipt.expect_specific_failure(|error| {
+        if let RuntimeError::ApplicationError(ApplicationError::PanicMessage(msg)) = error {
+            msg.starts_with("2013 ")
+        } else {
+            false
+        }
+    });
+    drop(receipt);
+
+    // (non-trusted resource, fungible play resource)
+    let receipt =
+        call_deposit_funds(
+            &mut test_runner,
+            &bob,
+            escrow,
+            alice_pool_badge.clone(),
+            Some(bob_id_badge_2_1.clone()),
+            play_resource_f,
+            dec!(10),
+            false);
+    receipt.expect_specific_failure(|error| {
+        if let RuntimeError::ApplicationError(ApplicationError::PanicMessage(msg)) = error {
+            msg.starts_with("2013 ")
+        } else {
+            false
+        }
+    });
+    drop(receipt);
+
+    
+    // Set up Alice's trust in Bob
+    call_add_trusted_nfgid(&mut test_runner,
+                           &alice,
+                           escrow,
+                           &alice_pool_badge,
+                           bob_id_badge_1_1_trusted.clone(),
+                           true);
+
+    call_add_trusted_resource(&mut test_runner,
+                              &alice,
+                              escrow,
+                              &alice_pool_badge,
+                              bob_id_res_2_trusted.clone(),
+                              true);
+
+    // Verify that untrusted callers still don't get to play
+    let receipt =
+        call_deposit_funds(
+            &mut test_runner,
+            &bob,
+            escrow,
+            alice_pool_badge.clone(),
+            Some(bob_id_badge_1_2_untrusted.clone()),
+            play_resource_f, //fungible
+            dec!(10),
+            false);
+    receipt.expect_specific_failure(|error| {
+        if let RuntimeError::ApplicationError(ApplicationError::PanicMessage(msg)) = error {
+            msg.starts_with("2013 ")
+        } else {
+            false
+        }
+    });
+    drop(receipt);
+
+    let receipt =
+        call_deposit_funds(
+            &mut test_runner,
+            &bob,
+            escrow,
+            alice_pool_badge.clone(),
+            Some(bob_id_badge_1_2_untrusted.clone()),
+            play_resource_nf, // non-fungible
+            dec!(10),
+            false);
+    receipt.expect_specific_failure(|error| {
+        if let RuntimeError::ApplicationError(ApplicationError::PanicMessage(msg)) = error {
+            msg.starts_with("2013 ")
+        } else {
+            false
+        }
+    });
+    drop(receipt);
+
+    
+    // Verify that trusted callers do get allowances back
+    
+    // (trusted nfgid, non-fungible play resource)
+    let receipt =
+        call_deposit_funds_with_non_fungibles(
+            &mut test_runner,
+            &bob,
+            escrow,
+            alice_pool_badge.clone(),
+            Some(bob_id_badge_1_1_trusted.clone()),
+            play_resource_nf,
+            [500.into()].into(),
+            true);
+    let result = receipt.expect_commit_success();
+    let allowance = balance_change_nflids(
+        result,
+        test_runner.get_component_vaults(bob.account, alice_pool_allowance_resource),
+        alice_pool_allowance_resource).0.first().unwrap().clone();
+    drop(receipt);
+
+    // Try to abuse the allowance
+    let receipt =
+        call_withdraw_with_allowance(&mut test_runner,
+                                     &bob,
+                                     escrow,
+                                     &NonFungibleGlobalId::new(alice_pool_allowance_resource,
+                                                               allowance.clone()),
+                                     TokenQuantity::Fungible(dec!(1)),
+                                     false);
+    receipt.expect_specific_failure(|error| {
+        if let RuntimeError::ApplicationError(ApplicationError::PanicMessage(msg)) = error {
+            msg.starts_with("2012 ")
+        } else {
+            false
+        }
+    });
+    drop(receipt);
+    
+    let receipt =
+        call_withdraw_with_allowance(&mut test_runner,
+                                     &bob,
+                                     escrow,
+                                     &NonFungibleGlobalId::new(alice_pool_allowance_resource,
+                                                               allowance.clone()),
+                                     TokenQuantity::NonFungible(Some([499.into()].into()), None),
+                                     false);
+    receipt.expect_specific_failure(|error| {
+        if let RuntimeError::ApplicationError(ApplicationError::PanicMessage(msg)) = error {
+            msg.starts_with("2012 ")
+        } else {
+            false
+        }
+    });
+    drop(receipt);
+
+    let receipt =
+        call_withdraw_with_allowance(&mut test_runner,
+                                     &bob,
+                                     escrow,
+                                     &NonFungibleGlobalId::new(alice_pool_allowance_resource,
+                                                               allowance.clone()),
+                                     TokenQuantity::NonFungible(Some([499.into()].into()), Some(1)),
+                                     false);
+    receipt.expect_specific_failure(|error| {
+        if let RuntimeError::ApplicationError(ApplicationError::PanicMessage(msg)) = error {
+            msg.starts_with("2012 ")
+        } else {
+            false
+        }
+    });
+    drop(receipt);
+
+    let receipt =
+        call_withdraw_with_allowance(&mut test_runner,
+                                     &bob,
+                                     escrow,
+                                     &NonFungibleGlobalId::new(alice_pool_allowance_resource,
+                                                               allowance.clone()),
+                                     TokenQuantity::NonFungible(Some([500.into()].into()), Some(1)),
+                                     false);
+    receipt.expect_specific_failure(|error| {
+        if let RuntimeError::ApplicationError(ApplicationError::PanicMessage(msg)) = error {
+            msg.starts_with("2012 ")
+        } else {
+            false
+        }
+    });
+    drop(receipt);
+
+    // Verify that the allowance is usable
+    let receipt =
+        call_withdraw_with_allowance(&mut test_runner,
+                                     &bob,
+                                     escrow,
+                                     &NonFungibleGlobalId::new(alice_pool_allowance_resource,
+                                                               allowance.clone()),
+                                     TokenQuantity::NonFungible(Some([500.into()].into()), None),
+                                     true);
+    let result = receipt.expect_commit_success();
+    assert!(balance_change_nflids(
+        result,
+        test_runner.get_component_vaults(bob.account, play_resource_nf),
+        play_resource_nf).0.contains(&500.into()),
+            "Bob should now have #500 back");
+    assert!(balance_change_nflids(
+        result,
+        test_runner.get_component_vaults(bob.account, alice_pool_allowance_resource),
+        alice_pool_allowance_resource).0.len() == 0,
+            "The allowance should now be burned");
+    drop(receipt);
+
+    
+    // (trusted resource, non-fungible play resource)
+    let receipt =
+        call_deposit_funds_with_non_fungibles(
+            &mut test_runner,
+            &bob,
+            escrow,
+            alice_pool_badge.clone(),
+            Some(bob_id_badge_2_1.clone()),
+            play_resource_nf,
+            [501.into()].into(),
+            true);
+    let result = receipt.expect_commit_success();
+    let allowance = balance_change_nflids(
+        result,
+        test_runner.get_component_vaults(bob.account, alice_pool_allowance_resource),
+        alice_pool_allowance_resource).0.first().unwrap().clone();
+    drop(receipt);
+
+    // Verify that the allowance is usable
+    let receipt =
+        call_withdraw_with_allowance(&mut test_runner,
+                                     &bob,
+                                     escrow,
+                                     &NonFungibleGlobalId::new(alice_pool_allowance_resource,
+                                                               allowance.clone()),
+                                     TokenQuantity::NonFungible(Some([501.into()].into()), None),
+                                     true);
+    let result = receipt.expect_commit_success();
+    assert!(balance_change_nflids(
+        result,
+        test_runner.get_component_vaults(bob.account, play_resource_nf),
+        play_resource_nf).0.contains(&501.into()),
+            "Bob should now have #501 back");
+    assert!(balance_change_nflids(
+        result,
+        test_runner.get_component_vaults(bob.account, alice_pool_allowance_resource),
+        alice_pool_allowance_resource).0.len() == 0,
+            "The allowance should now be burned");
+    drop(receipt);
+    drop(allowance);
+
+    
+    // (trusted nfgid, fungible play resource)
+    let receipt =
+        call_deposit_funds(
+            &mut test_runner,
+            &bob,
+            escrow,
+            alice_pool_badge.clone(),
+            Some(bob_id_badge_1_1_trusted.clone()),
+            play_resource_f,
+            dec!(100),
+            true);
+    let result = receipt.expect_commit_success();
+    let allowance = balance_change_nflids(
+        result,
+        test_runner.get_component_vaults(bob.account, alice_pool_allowance_resource),
+        alice_pool_allowance_resource).0.first().unwrap().clone();
+    drop(receipt);
+
+    // Try to abuse the allowance
+    let receipt =
+        call_withdraw_with_allowance(&mut test_runner,
+                                     &bob,
+                                     escrow,
+                                     &NonFungibleGlobalId::new(alice_pool_allowance_resource,
+                                                               allowance.clone()),
+                                     TokenQuantity::Fungible(dec!(101)),
+                                     false);
+    receipt.expect_specific_failure(|error| {
+        if let RuntimeError::ApplicationError(ApplicationError::PanicMessage(msg)) = error {
+            msg.starts_with("2010 ")
+        } else {
+            false
+        }
+    });
+    drop(receipt);
+    
+    let receipt =
+        call_withdraw_with_allowance(&mut test_runner,
+                                     &bob,
+                                     escrow,
+                                     &NonFungibleGlobalId::new(alice_pool_allowance_resource,
+                                                               allowance.clone()),
+                                     TokenQuantity::NonFungible(None, Some(101)),
+                                     false);
+    receipt.expect_specific_failure(|error| {
+        if let RuntimeError::ApplicationError(ApplicationError::PanicMessage(msg)) = error {
+            msg.starts_with("2010 ")
+        } else {
+            false
+        }
+    });
+    drop(receipt);
+
+    // Verify that the allowance is usable
+    let receipt =
+        call_withdraw_with_allowance(&mut test_runner,
+                                     &bob,
+                                     escrow,
+                                     &NonFungibleGlobalId::new(alice_pool_allowance_resource,
+                                                               allowance.clone()),
+                                     TokenQuantity::Fungible(dec!(50)),
+                                     true);
+    let result = receipt.expect_commit_success();
+    assert!(balance_change_amount(
+        result,
+        test_runner.get_component_vaults(bob.account, play_resource_f),
+        play_resource_f) == dec!(50),
+            "Bob should now have 50 tokens back");
+
+    // and again, to test burn after multiple uses
+    let receipt =
+        call_withdraw_with_allowance(&mut test_runner,
+                                     &bob,
+                                     escrow,
+                                     &NonFungibleGlobalId::new(alice_pool_allowance_resource,
+                                                               allowance.clone()),
+                                     TokenQuantity::Fungible(dec!(50)),
+                                     true);
+    let result = receipt.expect_commit_success();
+    assert!(balance_change_amount(
+        result,
+        test_runner.get_component_vaults(bob.account, play_resource_f),
+        play_resource_f) == dec!(50),
+            "Bob should now have another 50 tokens back");
+    assert!(balance_change_nflids(
+        result,
+        test_runner.get_component_vaults(bob.account, alice_pool_allowance_resource),
+        alice_pool_allowance_resource).0.len() == 0,
+            "The allowance should now be burned");
+    drop(receipt);
+
+    // (trusted resource, fungible play resource)
+    let receipt =
+        call_deposit_funds(
+            &mut test_runner,
+            &bob,
+            escrow,
+            alice_pool_badge.clone(),
+            Some(bob_id_badge_2_1.clone()),
+            play_resource_f,
+            dec!(100),
+            true);
+    let result = receipt.expect_commit_success();
+    let allowance = balance_change_nflids(
+        result,
+        test_runner.get_component_vaults(bob.account, alice_pool_allowance_resource),
+        alice_pool_allowance_resource).0.first().unwrap().clone();
+    drop(receipt);
+
+    // Verify that the allowance is usable
+    let receipt =
+        call_withdraw_with_allowance(&mut test_runner,
+                                     &bob,
+                                     escrow,
+                                     &NonFungibleGlobalId::new(alice_pool_allowance_resource,
+                                                               allowance.clone()),
+                                     TokenQuantity::Fungible(dec!(100)),
+                                     true);
+    let result = receipt.expect_commit_success();
+    assert!(balance_change_amount(
+        result,
+        test_runner.get_component_vaults(bob.account, play_resource_f),
+        play_resource_f) == dec!(100),
+            "Bob should now have 100 tokens back");
+    assert!(balance_change_nflids(
+        result,
+        test_runner.get_component_vaults(bob.account, alice_pool_allowance_resource),
+        alice_pool_allowance_resource).0.len() == 0,
+            "The allowance should now be burned");
+    drop(receipt);
+    drop(allowance);
+}
