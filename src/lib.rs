@@ -39,6 +39,7 @@ use scrypto::prelude::*;
 
 pub mod util;
 pub mod token_quantity;
+mod mock_dex;
 
 use radix_engine_common::ManifestSbor;
 use util::{unix_time_now, length_of_option_set, proof_to_nfgid};
@@ -100,7 +101,7 @@ pub struct AllowanceNfData {
     /// field is also used for tracking the next allowed use if the
     /// allowance type is `Repeating` with a delay set.
     #[mutable]
-    pub valid_after: i64,
+    pub valid_from: i64,
 
     /// How to deal with this allowance being used multiple times.
     pub life_cycle: AllowanceLifeCycle,
@@ -111,6 +112,15 @@ pub struct AllowanceNfData {
     /// The amount of this resource that can be taken.
     #[mutable]
     pub max_amount: Option<TokenQuantity>,
+}
+
+impl AllowanceNfData {
+    pub fn is_valid(&self) -> bool {
+        let now = unix_time_now();
+        self.valid_from >= now &&
+            (self.valid_until.is_none()
+            || self.valid_until.unwrap() < now)
+    }
 }
 
 #[derive(ScryptoSbor)]
@@ -401,7 +411,7 @@ mod escrow {
         pub fn mint_allowance(&mut self,
                               owner: Proof,
                               valid_until: Option<i64>,
-                              valid_after: i64,
+                              valid_from: i64,
                               life_cycle: AllowanceLifeCycle,
                               for_resource: ResourceAddress,
                               max_quantity: Option<TokenQuantity>) -> Bucket
@@ -427,7 +437,7 @@ mod escrow {
                 (Runtime::global_address(), owner),
                 pool_mgr,
                 valid_until,
-                valid_after,
+                valid_from,
                 life_cycle,
                 for_resource,
                 max_quantity)
@@ -665,7 +675,7 @@ mod escrow {
                        "allowance is not for this escrow");
 
             let now = unix_time_now();
-            assert!(nfdata.valid_after <= now,
+            assert!(nfdata.valid_from <= now,
                     "2009 allowance not yet valid");
             assert!(nfdata.valid_until.is_none()
                     || nfdata.valid_until.unwrap() >= now,
@@ -756,7 +766,7 @@ mod escrow {
                         ResourceManager::from(allowance.resource_address())
                             .update_non_fungible_data(
                                 &allowance.as_non_fungible().non_fungible_local_id(),
-                                "valid_after",
+                                "valid_from",
                                 now + min_delay);
                     }
                 }
@@ -917,7 +927,7 @@ mod escrow {
                             escrow_pool: (ComponentAddress, NonFungibleGlobalId),
                             pool_mgr: ResourceManager,
                             valid_until: Option<i64>,
-                            valid_after: i64,
+                            valid_from: i64,
                             life_cycle: AllowanceLifeCycle,
                             for_resource: ResourceAddress,
                             max_amount: Option<TokenQuantity>) -> Bucket
@@ -927,7 +937,7 @@ mod escrow {
                     AllowanceNfData {
                         escrow_pool,
                         valid_until,
-                        valid_after,
+                        valid_from,
                         life_cycle,
                         for_resource,
                         max_amount
