@@ -5,6 +5,33 @@ use scrypto::prelude::*;
 use crate::common::*;
 
 
+pub fn instantiate_mock_dex(test_runner: &mut DefaultTestRunner,
+                            owner: &User,
+                            package: PackageAddress,
+                            meme_resource: ResourceAddress)
+    -> ComponentAddress
+{
+    let manifest = ManifestBuilder::new()
+        .call_function(
+            package,
+            "MockDex",
+            "instantiate_mock_dex",
+            manifest_args!(meme_resource),
+        )
+        .build();
+    let receipt = test_runner.execute_manifest_ignoring_fee(
+        manifest,
+        vec![NonFungibleGlobalId::from_public_key(&owner.pubkey)],
+    );
+
+    if !receipt.is_commit_success() {
+        println!("{:?}", receipt);
+        panic!("TRANSACTION FAIL");
+    }
+
+    receipt.expect_commit_success().new_component_addresses()[0]
+}
+
 pub fn call_limit_sell_direct(
     test_runner: &mut DefaultTestRunner,
     user: &User,

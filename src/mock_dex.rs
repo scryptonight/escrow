@@ -97,6 +97,11 @@ mod mock_dex {
                 .globalize()
         }
 
+        /// Place a limit buy order. Pass funds to spend in `payment`.
+        /// Funds you receive in return will either go into our payout
+        /// vaults under your `trader` badge, or, if
+        /// `escrow_payout_component` is set will go to that Escrow
+        /// instead.
         pub fn limit_buy_direct(&mut self,
                                 trader: NonFungibleProof,
                                 price_in_xrd: Decimal,
@@ -144,6 +149,10 @@ mod mock_dex {
                                      }});
         }
 
+        /// Put a limit sell on the order book, with funds to sell in
+        /// `for_sale`. Payout from this sell order goes to the
+        /// `escrow_payout_component` if set, otherwise to our
+        /// internal payout vaults.
         pub fn limit_sell_direct(&mut self,
                                  trader: NonFungibleProof,
                                  price_in_xrd: Decimal,
@@ -166,6 +175,10 @@ mod mock_dex {
                                       }});
         }
 
+        /// Put a limit sell on the order book, with funds to sell
+        /// taken from Escrow via the `allowance` given. Payout from
+        /// this sell order goes to the `escrow_payout_component` if
+        /// set, otherwise to our internal payout vaults.
         pub fn limit_sell_with_escrow(&mut self,
                                       trader: NonFungibleProof,
                                       price_in_xrd: Decimal,
@@ -187,7 +200,10 @@ mod mock_dex {
                                       }});
         }
 
-        /// Pay a bunch of XRD to obtain MEME.
+        /// Pay a bunch of XRD to obtain MEME. If
+        /// `escrow_payout_component` is set then MEME is put into
+        /// that Escrow, otherwise it is returned out of this
+        /// function.
         pub fn market_buy_direct(&mut self,
                                  trader: Option<NonFungibleProof>,
                                  escrow_payout_component: Option<ComponentAddress>,
@@ -200,7 +216,6 @@ mod mock_dex {
 
             let mut maker_payouts = Vec::new();
             let mut offers_to_remove = Vec::new();
-
             for offering in self.sell_book.iter_mut() {
                 match &mut offering.1.source_of_funds {
                     SourceOfFunds::Direct { actor, price_in_xrd, vault } => {

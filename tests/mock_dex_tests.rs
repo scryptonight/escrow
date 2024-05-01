@@ -12,13 +12,13 @@ use manifests::*;
 use mock_dex_manifests::*;
 
 
-/// This tests that the MockDex works are intended, and that it
+/// This tests that the MockDex works as intended, and that it
 /// interfaces well with Escrow.
 #[test]
 fn mock_dex_tests() {
     let (mut test_runner, owner, package) = setup_for_test();
 
-    let meme_resource = test_runner.create_fungible_resource(dec!(1000000000), 18, owner.account);
+    let meme_resource = test_runner.create_fungible_resource(dec!(1_000_000_000), 18, owner.account);
 
     let manifest = ManifestBuilder::new()
         .call_function(
@@ -49,7 +49,7 @@ fn mock_dex_tests() {
         &owner.nfgid,
         &alice.account,
         &meme_resource,
-        TokenQuantity::Fungible(dec!(1000000000)),
+        TokenQuantity::Fungible(dec!(1_000_000_000)),
     );
     let alice_badge_res = test_runner.create_non_fungible_resource(alice.account);
     let alice_badge = NonFungibleGlobalId::new(alice_badge_res, 1.into());
@@ -642,16 +642,15 @@ fn mock_dex_tests() {
                         &alice_badge,
                         XRD);
 
-    let receipt =
-        call_market_buy_direct(
-            &mut test_runner,
-            &bob,
-            mock_dex_component,
-            None, // trader
-            None, // escrow
-            dec!(1000),
-            true,
-        );
+    call_market_buy_direct(
+        &mut test_runner,
+        &bob,
+        mock_dex_component,
+        None, // trader
+        None, // escrow
+        dec!(1000),
+        true,
+    );
     
     let bob_xrd_balance_post = test_runner.get_component_balance(bob.account, XRD);
     let bob_meme_balance_post = test_runner.get_component_balance(bob.account, meme_resource);
