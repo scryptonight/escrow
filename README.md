@@ -11,6 +11,10 @@ You can use XRD in your escrow pool to help pay transaction costs, or
 through use of Allowances, allow others to use your escrow pool to
 fund their transactions.
 
+An Escrow as implemented here is an example of a warehouse component
+as discussed in [this
+video](https://www.youtube.com/watch?v=naMAz9o9d2M).
+
 ## How to build the blueprint
 Make sure you have the necessary toolchain installed, see
 [here](https://docs.radixdlt.com/docs/getting-rust-scrypto)
