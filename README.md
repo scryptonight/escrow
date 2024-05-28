@@ -61,7 +61,7 @@ many tokens are actually available.
 
 ![Traditional distribution method](img/Traditional%20Distribution%20of%20MEME%20Tokens%20on%204%20DEXes.png)
 
-![Escrow-based distribution method](img/Escrow Distribution of MEME Tokens on 4 DEXes.png)
+![Escrow-based distribution method](img/Escrow%20Distribution%20of%20MEME%20Tokens%20on%204%20DEXes.png)
 
 ### Scenario 2 - buying from multiple DEXes
 
