@@ -128,12 +128,13 @@ pub fn call_deposit_funds_with_non_fungibles(test_runner: &mut DefaultTestRunner
     receipt
 }
 
-pub fn call_read_funds(test_runner: &mut DefaultTestRunner,
-                   user: &User,
-                   escrow: ComponentAddress,
-                   owner: &NonFungibleGlobalId,
-                   resource: ResourceAddress)
-                   -> Decimal
+pub fn call_read_funds(
+    test_runner: &mut DefaultTestRunner,
+    user: &User,
+    escrow: ComponentAddress,
+    owner: &NonFungibleGlobalId,
+    resource: ResourceAddress)
+    -> Decimal
 {
     let manifest = ManifestBuilder::new()
         .call_method(escrow,

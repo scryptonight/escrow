@@ -1,3 +1,8 @@
+//! A few utility functions.
+//!
+//! Many of these only exist because I got tired of writing out the
+//! details in full every time.
+
 use scrypto::prelude::*;
 
 /// Reduces a PreciseDecimal down to Decimal precision by rounding to
@@ -19,10 +24,24 @@ pub fn unix_time_now() -> i64 {
     Clock::current_time_rounded_to_minutes().seconds_since_unix_epoch
 }
 
+/// Extracts token details from a singleton proof and returns its
+/// non-fungible global id.
 pub fn proof_to_nfgid(proof: &CheckedNonFungibleProof) -> NonFungibleGlobalId {
     NonFungibleGlobalId::new(proof.resource_address(), proof.non_fungible_local_id())
 }
 
+/// Skips checking of an unchecked singleton proof and returns its
+/// non-fungible global id.
+pub fn unchecked_proof_to_nfgid(proof: Proof)
+                                -> NonFungibleGlobalId
+{
+    // We don't need to validate since we accept all
+    // non-fungible badges.
+    let owner = proof.skip_checking();
+    proof_to_nfgid(&owner.as_non_fungible())
+}
+
+/// Converts a u64 into an integer non-fungible local id.
 pub fn u64_to_nflid(id: u64) -> NonFungibleLocalId {
     NonFungibleLocalId::Integer(id.into())
 }

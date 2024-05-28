@@ -1,4 +1,4 @@
-//! WARNING This is a mock component intended for simple
+//! **WARNING** MockDex is a mock component intended for simple
 //! demonstrations with benign actors. **It has no security features
 //! and should not be put into production use.**
 
@@ -10,18 +10,26 @@ use crate::AllowanceNfData;
 use crate::TokenQuantity;
 use crate::util::proof_to_nfgid;
 
+/// Describes a trader and, optionally, that trader's Escrow
+/// component.
 #[derive(ScryptoSbor, ManifestSbor, PartialEq, Eq, Debug, Hash, Clone)]
 struct Actor {
     id_badge: NonFungibleGlobalId,
     escrow_payout_component: Option<ComponentAddress>,
 }
 
+/// Describes where to get the funds offered in a trade from.
 #[derive(ScryptoSbor, PartialEq, Eq, Debug)]
 enum SourceOfFunds {
+    /// Funds are directly available in our own vault.
     Direct{actor: Actor, price_in_xrd: Decimal, vault: Vault},
+
+    /// Funds must be taken from an Escrow. Our vault contains the
+    /// Allowance we must use to do so.
     FromEscrow{actor: Actor, price_in_xrd: Decimal, vault: Vault},
 }
 
+/// Contains a limit trade offer.
 #[derive(ScryptoSbor, PartialEq, Eq, Debug)]
 struct Offering
 {

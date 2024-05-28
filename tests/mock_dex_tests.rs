@@ -692,16 +692,15 @@ fn mock_dex_tests() {
                         &alice_badge,
                         meme_resource);
 
-    let receipt =
-        call_market_buy_direct(
-            &mut test_runner,
-            &bob,
-            mock_dex_component,
-            None, // trader
-            None, // escrow
-            dec!(100),
-            true,
-        );
+    call_market_buy_direct(
+        &mut test_runner,
+        &bob,
+        mock_dex_component,
+        None, // trader
+        None, // escrow
+        dec!(100),
+        true,
+    );
     
     let bob_xrd_balance_post = test_runner.get_component_balance(bob.account, XRD);
     let bob_meme_balance_post = test_runner.get_component_balance(bob.account, meme_resource);

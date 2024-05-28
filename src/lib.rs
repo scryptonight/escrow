@@ -1,16 +1,126 @@
+//! A component that stores funds for you and lets you access them
+//! yourself or issue Allowance NFTs to let others access them.
 //!
-//! About error messages
+//! Think of an Escrow as an account component external to your
+//! wallet, which is nevertheless under your control. You can use this
+//! Escrow as a central place to hold funds that go into a variety of
+//! services.
 //!
-//! Many error messages that are produced on panics in this code are
-//! preceded with an error code, starting at error code 2000 for this
-//! project. They are there to make each error easily recognizable in
-//! the test suite so that I can easily test that a transaction that
-//! is intended to fail fails for the correct reason.
+//! You can issue Allowance NFTs towards your Escrow and give those
+//! Allowances to others. Each Allowance NFT acts a bit like an IOU
+//! that the holder can use to extract funds from your Escrow, for as
+//! long as funds last.
 //!
+//! You could for example put 10k XRD into an Escrow, issue an
+//! Allowance for 10k XRD and give to your son, and another Allowance
+//! also for 10k XRD and give to your daughter. You explain to them
+//! that these are emergency funds they can dip into if they get into
+//! an emergency situation while travelling. You don't expect these
+//! funds to ever actually get used, but they are there in full for
+//! each of your two kids should the emergency ever arise.
 //!
-//! When calling subsidize_with_allowance note the following:
+//! A single Escrow component can hold any amount of token pools, each
+//! associated with an owner badge. That is, Alice can have a token
+//! pool where she stores all sorts of different tokens while Bob can
+//! also have a token pool on the same Escrow component instance that
+//! Alice does. And of course, Alice or Bob could even have multiple
+//! such sets of pools tied to different ownership badges still on the
+//! same Escrow instance. (In principle there is no reason the world
+//! should need more than a single instance of this component.) For
+//! this reason, when interacting with an Escrow instance you always
+//! need to know which owner badge to access, and which resource type
+//! you're interested in.
 //!
-//! * If you're using an Accumulating allowance, that allowance will
+//! # Some use cases
+//!
+//! ## Curbing your enthusiasm
+//!
+//! You could put funds into Escrow intended for playing an online
+//! game and issue an Allowance to that game that lets it charge its
+//! fees off of the Escrow. By disassociating these payments from your
+//! main account you can feel more safe about giving the game direct
+//! access to funds (since the Escrow only holds as much funds as you
+//! put there), and the Allowance system gives you fine grained
+//! control over how much and how often the game can charge you. Or
+//! you can use it to curb your own excitement: if you set it up so
+//! the game can at max extract, say, 100 XRD per month, then this
+//! effectively caps how much you end up spending on the game when
+//! otherwise the excitement of the moment might have you spending
+//! hundreds in a week without even realizing what's going on before
+//! it's too late.
+//!
+//! ## Central trading account
+//!
+//! You can use an Escrow as a central repository of funds that you
+//! use for trading activities. Markets that recognize the Escrow
+//! concept can make payouts for completed deals into the Escrow
+//! (instead of e.g. holding it inside their own internal vaults until
+//! you come to collect), and can pull funds for covering your trade
+//! deals also from the same Escrow. You could set this up to be
+//! self-perpetuating (if your trades are clever enough) in that the
+//! funds that go into the Escrow from completed deals fund your
+//! future deals that are being taken from the same Escrow. Then every
+//! once in a while can drop by and skim off some of the profits that
+//! have been happening since last payday.
+//!
+//! ## Selling all your tokens on all the exchanges
+//!
+//! If you're selling a million tokens of some type then instead of
+//! putting them all on a single exchange, and instead of having to
+//! meticulously distribute them across multiple exchanges, you can
+//! put your million tokens in an Escrow and put an Allowance for a
+//! million tokens on every exchange in the world. *All* the exchanges
+//! can then offer your million tokens for sale, and all of them will
+//! be pulling from your Escrow to fulfill trades. Once the Escrow is
+//! empty, the exchanges will automatically no longer be doing those
+//! trades because pulling from the Escrow will yield nothing.
+//!
+//! Note that test scenario 1 demonstrates this type of use case.
+//!
+//! ## Offering to buy more than you can afford
+//!
+//! You could use an Escrow to set up more trade deals than you can
+//! technically afford, by setting up Allowance-backed trade deals
+//! that are only going to actually be completed for so long as the
+//! Escrow holds the necessary funds. Maybe you have 10,000 XRD and
+//! you want to buy either USD or EURO stablecoins depending on which
+//! drops below a certain threshold first. You set up one limit buy
+//! for 10k XRD worth of USD, and one limit buy for 10k XRD worth of
+//! EURO, each backed by Allowances that can pull the full 10k XRD in
+//! your Escrow. Whichever of those happens first will pull all your
+//! funds (and then even if the other happens later the trade won't go
+//! through because you'll be out of funds). Contrast this to having
+//! to bind up XRD into each limit buy in which case you'd end up with
+//! a 5k XRD limit buy of USD and a 5k XRD limit buy of EURO.
+//!
+//! Note that test scenario 2 demonstrates this type of use case.
+//!
+//! ## Giving someone a (traditional) allowance account
+//!
+//! You could set up an Escrow as a funding mechanism for someone
+//! you're helping finance, putting funds into the Escrow and giving
+//! them an Allowance to extract those funds. This would give you
+//! control over their use of the funds (through Allowance rules)
+//! without them having to involve you directly every single time they
+//! need to make a withdrawal.
+//!
+//! # Subsidies
+//!
+//! You can subsidize (internally it uses `lock_fee` or
+//! `lock_contingent_fee`) the current transaction by pulling funds
+//! from your Escrow, using the [subsidize] and [subsidize_contingent]
+//! functions.
+//!
+//! You can also allow others to subsidize transactions by giving them
+//! an Allowance and having them use [subsidize_with_allowance] to
+//! pull XRD from your Escrow to run their transactions. You might be
+//! doing this as a marketing stunt, or it may be a customer support
+//! service, or perhaps it's to let a service run transactions on your
+//! behalf etc.
+//!
+//! When using [subsidize_with_allowance] note the following:
+//!
+//! - If you're using an Accumulating allowance, that allowance will
 //! be reduced by the amount you specify in the function call
 //! regardless of how much actually gets spent on the subsidy. This is
 //! because the component cannot know how much in fees you actually
@@ -18,7 +128,7 @@
 //! function call and only 5 XRD gets spent, the allowance remaining
 //! amount is nevertheless reduced by 10 XRD.
 //!
-//! * Failed subsidized transactions will pull funds from your escrow
+//! - Failed subsidized transactions will pull funds from your escrow
 //! pool but this will not be reflected in the Allowance itself since
 //! failed transactions cause no on-ledger changes apart from tx
 //! cost. This means that a malicious allowance holder for XRD can use
@@ -29,29 +139,130 @@
 //! current implementation is more intended to be a tech demo than a
 //! fully deployable product and so this has not been done.)
 //!
-//! Note use of TokenQuantity introduecs a possible cost unit limit
-//! problem when the IndexSet inside gets large. The current
+//! # Automatic Allowance issuance
+//!
+//! You can maintain a list of trusted parties who will automatically
+//! receive Allowances whenever they deposit funds into your
+//! account. You may use this if you have multiple different services
+//! interacting with your Escrow pool (different market places
+//! perhaps) and you want each such service to be able to take back
+//! out funds they put in, in order to spend them on services or
+//! trades.
+//!
+//! Such a party will need to provide a badge with a trusted
+//! non-fungible global id, or simply with a trusted resource address,
+//! when calling [deposit_funds] and they will receive back an
+//! Allowance for that amount of the deposit.
+//!
+//! # Public API
+//!
+//! - [instantiate_escrow] Create a new Escrow instance.
+//!
+//! - [deposit_funds] Add funds to your Escrow pool.
+//!
+//! - [read_funds] See how many funds you have available.
+//!
+//! - [withdraw] Pull funds out of your Escrow pool.
+//!
+//! - [withdraw_with_allowance] Use an Allowance to pull funds out of
+//! someone's Escrow pool.
+//!
+//! - [withdraw_all_of] Pull all funds of one type out of your Escrow
+//! pool.
+//!
+//! - [subsidize] Pull XRD from your Escrow pool to subsidize the
+//! current transaction.
+//!
+//! - [subsidize_with_allowance] Use an Allowance to pull XRD out of
+//! someone's Escrow pool to subsidize the current transaction.
+//!
+//! - [subsidize_contingent] Pull XRD from your Escrow pool to
+//! subsidize (contingent on its success) the current transaction.
+//!
+//! - [mint_allowance] Create an Allowance for your Escrow pool.
+//!
+//! - [reduce_allowance_to_amount] Reduce the amount of funds
+//! available in an Allowance you control.
+//!
+//! - [reduce_allowance_by_nflids] Reduce the set of non-fungible ids
+//! available in an Allowance you control.
+//!
+//! - [add_trusted_nfgid] Add a non-fungible global id to the list of
+//! badges you trust to be given automatic Allowances when depositing
+//! to your Escrow pool.
+//!
+//! - [remove_trusted_nfgid] Remove a non-fungible id to the list of
+//! badges you trust.
+//!
+//! - [is_nfgid_trusted] Checks if a given non-fungible is trusted by
+//! a specific Escrow pool.
+//!
+//! - [add_trusted_resource] Add a resource, all badges of which you
+//! trust to be given automatic Allowances.
+//!
+//! - [remove_trusted_resource] Remove a resource from the trusted
+//! resource list.
+//!
+//! - [is_resource_trusted] Checks if a given resource is trusted.
+//!
+//!
+//! # About error messages
+//!
+//! Many error messages that are produced on panics in this code are
+//! preceded with an error code, starting at error code 2000 for this
+//! project. They are there to make each error easily recognizable in
+//! the test suite so that I can easily test that a transaction that
+//! is intended to fail fails for the correct reason.
+//!
+//! Note that is this is a fairly new idea, not all the error messages
+//! have codes at this point.
+//!
+//! # About IndexSet sizes for non-fungible local ids
+//!
+//! Note that use of TokenQuantity introduces a possible cost unit
+//! limit problem when the IndexSet inside gets large. The current
 //! implementation is suitable for a moderate number of
 //! nonfungible-ids in that set, but not very many.
-
+//!
+//! [instantiate_escrow]: crate::escrow::Escrow::instantiate_escrow
+//! [deposit_funds]: crate::escrow::Escrow::deposit_funds
+//! [read_funds]: crate::escrow::Escrow::read_funds
+//! [withdraw]: crate::escrow::Escrow::withdraw
+//! [withdraw_with_allowance]: crate::escrow::Escrow::withdraw_with_allowance
+//! [withdraw_all_of]: crate::escrow::Escrow::withdraw_all_of
+//! [subsidize]: crate::escrow::Escrow::subsidize
+//! [subsidize_with_allowance]: crate::escrow::Escrow::subsidize_with_allowance
+//! [subsidize_contingent]: crate::escrow::Escrow::subsidize_contingent
+//! [mint_allowance]: crate::escrow::Escrow::mint_allowance
+//! [reduce_allowance_to_amount]: crate::escrow::Escrow::reduce_allowance_to_amount
+//! [reduce_allowance_by_nflids]: crate::escrow::Escrow::reduce_allowance_by_nflids
+//! [add_trusted_nfgid]: crate::escrow::Escrow::add_trusted_nfgid
+//! [remove_trusted_nfgid]: crate::escrow::Escrow::remove_trusted_nfgid
+//! [is_nfgid_trusted]: crate::escrow::Escrow::is_nfgid_trusted
+//! [add_trusted_resource]: crate::escrow::Escrow::add_trusted_resource
+//! [remove_trusted_resource]: crate::escrow::Escrow::remove_trusted_resource
+//! [is_resource_trusted]: crate::escrow::Escrow::is_resource_trusted
 
 use scrypto::prelude::*;
 
 pub mod util;
 pub mod token_quantity;
-mod mock_dex;
+pub mod mock_dex;
 
 use radix_engine_common::ManifestSbor;
-use util::{unix_time_now, length_of_option_set, proof_to_nfgid};
+use util::{unix_time_now, length_of_option_set, unchecked_proof_to_nfgid};
 use token_quantity::TokenQuantity;
 
+/// Defines the lifecycle of an Allowance NFT. Every Allowance follows
+/// exactly one of these strategies.
 #[derive(ScryptoSbor, ManifestSbor)]
 pub enum AllowanceLifeCycle {
     /// Allowance NFT will be burnt after first use.
     OneOff,
 
     /// Each use reduces `max_amount`. Allowance NFT will be burnt
-    /// when `max_amount` reaches 0.
+    /// when `max_amount` reaches 0. (If `max_amount` is `None` then
+    /// this is effectively the same as a `OneOff` lifecycle.)
     Accumulating,
 
     /// The allowance can be used any number of times, each time for
@@ -59,9 +270,9 @@ pub enum AllowanceLifeCycle {
     /// than once every `min_delay` seconds. If this is set to zero it
     /// will still prevent multiple uses within the same "second".
     ///
-    /// Note that if this is set to `None` the allowance can be used
-    /// multiple times per "second" and even multiple times in the
-    /// same transaction manifest.
+    /// Note that if `min_delay` is set to `None` the allowance can be
+    /// used multiple times per "second" and even multiple times in
+    /// the same transaction manifest.
     ///
     /// Also note that the ledger has a maximum clock accuracy which
     /// means that the preceding "per second" may actually be per
@@ -94,8 +305,8 @@ pub struct AllowanceNfData {
     /// be used.
     pub valid_until: Option<i64>,
 
-    /// The allowance cannot be used until this Unix time is in the
-    /// past. Set to zero if you don't want to use this.
+    /// The allowance cannot be used until this Unix time. Set to zero
+    /// if you don't want to use this.
     ///
     /// In addition to determining the first possible use time, this
     /// field is also used for tracking the next allowed use if the
@@ -109,12 +320,14 @@ pub struct AllowanceNfData {
     /// The resource this allowance is for.
     pub for_resource: ResourceAddress,
 
-    /// The amount of this resource that can be taken.
+    /// The amount of this resource that can be taken. If this is
+    /// `None` then any amount can be taken.
     #[mutable]
     pub max_amount: Option<TokenQuantity>,
 }
 
 impl AllowanceNfData {
+    /// Checks our time-based validity.
     pub fn is_valid(&self) -> bool {
         let now = unix_time_now();
         self.valid_from >= now &&
@@ -123,11 +336,21 @@ impl AllowanceNfData {
     }
 }
 
+/// A pool holds any number of vaults in it, one vault for each type
+/// of resource that has even been in the pool. Each pool has its own
+/// resource address for Allowance NFTs, and a set of trusted badges
+/// and badge resources.
 #[derive(ScryptoSbor)]
 struct Pool {
+    /// Our Allowances are of this non-fungible resource.
     allowance_badge_res: ResourceAddress,
+    /// We trust these badges enough to give them back Allowances to
+    /// cover any deposits they make with us.
     trusted_nfgids: KeyValueStore<NonFungibleGlobalId, bool>,
+    /// We trust holders of badges of these resources enough to give
+    /// them back Allowances to cover any deposits they make with us.
     trusted_res: KeyValueStore<ResourceAddress, bool>,
+    /// Contains all the pool funds.
     vaults: KeyValueStore<ResourceAddress, Vault>,
 }
 
@@ -135,11 +358,15 @@ struct Pool {
 mod escrow {
     use crate::AllowanceLifeCycle;
 
+    /// An Escrow is just a bunch of pools, each pool tied to the
+    /// badge of its owner.
     struct Escrow {
         pools: KeyValueStore<NonFungibleGlobalId, Pool>,
     }
 
     impl Escrow {
+        /// Note that the owner of an Escrow component has no
+        /// particular power over it or its users.
         pub fn instantiate_escrow() -> Global<Escrow>
         {
             Self {
@@ -246,28 +473,29 @@ mod escrow {
                         quantity: TokenQuantity) -> Bucket
         {
             let (take_nflids, take_amount) = quantity.extract_max_values();
-            self.operate_on_vault(&self.proof_to_nfgid(caller),
-                                  &resource,
-                                  None,
-                                  |mut v| {
-                                      let mut bucket: Option<Bucket> = None;
+            self.operate_on_vault(
+                &unchecked_proof_to_nfgid(caller),
+                &resource,
+                None,
+                |mut v| {
+                    let mut bucket: Option<Bucket> = None;
 
-                                      // First take the named nflids: if we do this the
-                                      // other way around they may no longer be
-                                      // available when we try.
-                                      if let Some(nflids) = &take_nflids {
-                                          bucket = Some(v.as_non_fungible().take_non_fungibles(&nflids).into());
-                                      }
-                                      // Then take the necessary amount of arbitrary tokens.
-                                      if let Some(amount) = take_amount {
-                                          if let Some(ref mut bucket) = bucket {
-                                              bucket.put(v.take(amount));
-                                          } else {
-                                              bucket = Some(v.take(amount));
-                                          }
-                                      }
-                                      bucket
-                                  })
+                    // First take the named nflids: if we do this the
+                    // other way around they may no longer be
+                    // available when we try.
+                    if let Some(nflids) = &take_nflids {
+                        bucket = Some(v.as_non_fungible().take_non_fungibles(&nflids).into());
+                    }
+                    // Then take the necessary amount of arbitrary tokens.
+                    if let Some(amount) = take_amount {
+                        if let Some(ref mut bucket) = bucket {
+                            bucket.put(v.take(amount));
+                        } else {
+                            bucket = Some(v.take(amount));
+                        }
+                    }
+                    bucket
+                })
                 .unwrap()
         }
 
@@ -320,7 +548,7 @@ mod escrow {
              allowance)
         }
 
-        /// The owner of a pool can call this convenience method to
+        /// The owner of a pool can call this convenience function to
         /// withdraw all tokens of a given resource. Note that this
         /// may panic on exceeding cost unit limits if you're trying
         /// withdraw a large number of non-fungible tokens. In this
@@ -333,7 +561,7 @@ mod escrow {
                                resource: ResourceAddress)
                                -> Bucket
         {
-            self.operate_on_vault(&self.proof_to_nfgid(caller),
+            self.operate_on_vault(&unchecked_proof_to_nfgid(caller),
                                   &resource,
                                   None,
                                   |mut v| Some(v.take_all()))
@@ -348,7 +576,7 @@ mod escrow {
                          caller: Proof,
                          amount: Decimal)
         {
-            self.operate_on_vault(&self.proof_to_nfgid(caller),
+            self.operate_on_vault(&unchecked_proof_to_nfgid(caller),
                                   &XRD,
                                   None,
                                   |v| {v.as_fungible().lock_fee(amount); None});
@@ -392,13 +620,13 @@ mod escrow {
                                     amount: Decimal)
         {
             self.operate_on_vault(
-                &self.proof_to_nfgid(caller),
+                &unchecked_proof_to_nfgid(caller),
                 &XRD,
                 None,
                 |v| {v.as_fungible().lock_contingent_fee(amount); None});
         }
 
-        /// The owner of a pool can mint allowances to that pool, and
+        /// The owner of a pool can mint allowances for that pool, and
         /// can then distribute those allowance NFTs to whoever.
         ///
         /// The allowance will be for the pool owned by the `owner`
@@ -407,7 +635,7 @@ mod escrow {
         /// Otherwise, specify the parameters of the allowance (see
         /// the doc for the AllowanceNfData struct for details), and
         /// the newly created allowance will be returned out of this
-        /// method.
+        /// function.
         pub fn mint_allowance(&mut self,
                               owner: Proof,
                               valid_until: Option<i64>,
@@ -419,8 +647,12 @@ mod escrow {
             if let Some(max_quantity) = &max_quantity {
                 let amount;
                 match max_quantity {
-                    TokenQuantity::NonFungible(_, max_amount) => { amount = max_amount.map(|v|Decimal::from(v)) },
-                    TokenQuantity::Fungible(max_amount) => { amount = Some(*max_amount) },
+                    TokenQuantity::NonFungible(_, max_amount) => {
+                        amount = max_amount.map(|v|Decimal::from(v))
+                    },
+                    TokenQuantity::Fungible(max_amount) => {
+                        amount = Some(*max_amount)
+                    },
                 }
                 assert!(!amount.unwrap_or_default().is_negative(),
                         "max_amount cannot be negative");
@@ -428,7 +660,7 @@ mod escrow {
 
             // Access control is effectively enforced through our pool
             // lookup further down.
-            let owner = self.proof_to_nfgid(owner);
+            let owner = unchecked_proof_to_nfgid(owner);
 
             let pool_mgr = ResourceManager::from(
                 self.get_or_add_pool(&owner).allowance_badge_res);
@@ -444,11 +676,11 @@ mod escrow {
         }
 
         /// Anyone who holds an `allowance` NFT can voluntarily reduce
-        /// its max amount by calling this method. Just provide a
+        /// its max amount by calling this function. Just provide a
         /// proof that you control the allowance and you're good.
         ///
         /// Make sure that `new_max` is lower than (or equal to) the
-        /// `max_amount` currently in the allowance or this method
+        /// `max_amount` currently in the allowance or this function
         /// will panic. Also don't send in a negative number.
         ///
         /// On a NonFungible type allowance this only reduces the
@@ -492,6 +724,8 @@ mod escrow {
                     },
                 }
             } else {
+                // Since `None` means infinite, changing from `None`
+                // to any number is a reduction and therefore allowed.
                 new_token_quantity = TokenQuantity::Fungible(new_max);
             }
 
@@ -503,7 +737,7 @@ mod escrow {
 
         /// Anyone who holds an `allowance` NFT of NonFungible type
         /// can voluntarily reduce its availeble nflids by calling
-        /// this method. Just provide a proof that you control the
+        /// this function. Just provide a proof that you control the
         /// allowance and you're good.
         ///
         /// Any nflids you specify in `to_remove` will be removed from
@@ -514,9 +748,9 @@ mod escrow {
         /// On a NonFungible type allowance this only reduces the
         /// nflids set, never the additional fixed amount.
         ///
-        /// This method will panic if you try to call it on a Fungible
-        /// allowance, or if your allowance doesn't currently have an
-        /// nflids set defined.
+        /// This function will panic if you try to call it on a
+        /// Fungible allowance, or if your allowance doesn't currently
+        /// have an nflids set defined.
         pub fn reduce_allowance_by_nflids(&self,
                                           allowance: Proof,
                                           to_remove: IndexSet<NonFungibleLocalId>)
@@ -565,7 +799,7 @@ mod escrow {
                                  owner: Proof,
                                  add_nfgid: NonFungibleGlobalId)
         {
-            let owner_nfgid = self.proof_to_nfgid(owner);
+            let owner_nfgid = unchecked_proof_to_nfgid(owner);
             let pool = self.get_or_add_pool(&owner_nfgid);
             pool.trusted_nfgids.insert(add_nfgid, true);
         }
@@ -577,7 +811,7 @@ mod escrow {
                                     owner: Proof,
                                     remove_nfgid: NonFungibleGlobalId)
         {
-            let owner_nfgid = self.proof_to_nfgid(owner);
+            let owner_nfgid = unchecked_proof_to_nfgid(owner);
             let pool = self.get_or_add_pool(&owner_nfgid);
             pool.trusted_nfgids.insert(remove_nfgid, false);
         }
@@ -610,7 +844,7 @@ mod escrow {
                                     owner: Proof,
                                     add_resource: ResourceAddress)
         {
-            let owner_nfgid = self.proof_to_nfgid(owner);
+            let owner_nfgid = unchecked_proof_to_nfgid(owner);
             let pool = self.get_or_add_pool(&owner_nfgid);
             pool.trusted_res.insert(add_resource, true);
         }
@@ -622,7 +856,7 @@ mod escrow {
                                        owner: Proof,
                                        remove_resource: ResourceAddress)
         {
-            let owner_nfgid = self.proof_to_nfgid(owner);
+            let owner_nfgid = unchecked_proof_to_nfgid(owner);
             let pool = self.get_or_add_pool(&owner_nfgid);
             pool.trusted_res.insert(remove_resource, false);
         }
@@ -642,7 +876,7 @@ mod escrow {
         }
 
         //
-        // Internal helper methods follow
+        // Internal helper functions follow
         //
         
         /// Expends an allowance (or part of it) by checking that it
@@ -783,7 +1017,7 @@ mod escrow {
         }
 
         /// Determines if this nfgid is trusted to receive automatic
-        /// Allowances. Does not consider whether its resource is
+        /// Allowances. Does not consider whether its *resource* is
         /// trusted, check that individually.
         fn is_nfgid_trusted_by_pool(&self,
                                     pool: &KeyValueEntryRef<Pool>,
@@ -808,32 +1042,19 @@ mod escrow {
             }
         }
 
-        /// Skips checking of an unchecked proof and returns its
-        /// non-fungible global id.
-        fn proof_to_nfgid(&self,
-                          proof: Proof)
-                          -> NonFungibleGlobalId
-        {
-            // We don't need to validate since we accept all
-            // non-fungible badges.
-            let owner = proof.skip_checking();
-            proof_to_nfgid(&owner.as_non_fungible())
-        }
-
-
         /// Allows you to do operations on a given pool vault, running
         /// `operation` and passing the vault corresponding to the
         /// requested `resource` to it.
         ///
-        /// NOTE when calling this method, `owner` must be an already
-        /// authorized identity as it is used to grant access to
-        /// vaults. It *must* have come out of a proof, or out of a
+        /// NOTE when calling this function, `owner` must be an
+        /// already authorized identity as it is used to grant access
+        /// to vaults. It *must* have come out of a proof, or out of a
         /// bucket, or otherwise from a trusted source.
         ///
         /// If 'allowance_resaddr' is present then authority to
         /// operate on the vault came from an allowance NFT with that
-        /// resource address. This method asserts that that is indeed
-        /// the resource address of the pool's allowance NFTs.
+        /// resource address. This function asserts that that is
+        /// indeed the resource address of the pool's allowance NFTs.
         fn operate_on_vault<F>(&mut self,
                                owner: &NonFungibleGlobalId,
                                resource: &ResourceAddress,

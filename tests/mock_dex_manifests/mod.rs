@@ -1,6 +1,6 @@
 use scrypto_unit::*;
 use transaction::builder::ManifestBuilder;
-use radix_engine::transaction::{CommitResult, TransactionReceipt};
+use radix_engine::transaction::{TransactionReceipt};
 use scrypto::prelude::*;
 use crate::common::*;
 

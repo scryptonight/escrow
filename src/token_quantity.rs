@@ -1,3 +1,6 @@
+//! Provides a type which lets you specify token quantities whether
+//! they are fungible or non-fungible.
+
 use scrypto::prelude::*;
 
 use crate::util::length_of_option_set;
