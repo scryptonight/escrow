@@ -709,7 +709,6 @@ mod escrow {
                         assert!(amount >= new_max, "2000 allowance increase not allowed");
                         new_token_quantity = TokenQuantity::Fungible(new_max);
                     },
-                    // TODO test cost unit limits on nflids
                     TokenQuantity::NonFungible(nflids, amount) => {
                         if let Some(amount) = amount {
                             assert!(new_max < amount.into(),
