@@ -19,7 +19,7 @@ video](https://www.youtube.com/watch?v=naMAz9o9d2M).
 Make sure you have the necessary toolchain installed, see
 [here](https://docs.radixdlt.com/docs/getting-rust-scrypto)
 for details. You will need Scrypto 1.1.1.
-- From the command line, in the `kaupa` directory, run `scrypto build`
+- From the command line, in the `escrow` directory, run `scrypto build`
 
 Note that this project compiles with a number of compiler warnings.
 Primarily this seems to be because I use modules with common functions
@@ -27,10 +27,10 @@ in them that are used by some test case compilations and not by
 others, and the ones that don't use them complain about it.
 
 ### How to run the test suite
-- From the command line, in the `kaupa` directory, run `scrypto test`
+- From the command line, in the `escrow` directory, run `scrypto test`
 
 ### How to generate the documentation
-- From the command line, in the `kaupa` directory, run `cargo doc`
+- From the command line, in the `escrow` directory, run `cargo doc`
 
 The generated web pages contain detailed documentation on how the
 blueprint works.
