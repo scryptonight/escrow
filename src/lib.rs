@@ -60,8 +60,8 @@
 //! self-perpetuating (if your trades are clever enough) in that the
 //! funds that go into the Escrow from completed deals fund your
 //! future deals that are being taken from the same Escrow. Then every
-//! once in a while can drop by and skim off some of the profits that
-//! have been happening since last payday.
+//! once in a while you can drop by and skim off some of the profits
+//! that have been happening since last payday.
 //!
 //! ## Selling all your tokens on all the exchanges
 //!
@@ -214,7 +214,7 @@
 //! the test suite so that I can easily test that a transaction that
 //! is intended to fail fails for the correct reason.
 //!
-//! Note that is this is a fairly new idea, not all the error messages
+//! Note that as this is a fairly new idea, not all the error messages
 //! have codes at this point.
 //!
 //! # About IndexSet sizes for non-fungible local ids
@@ -337,7 +337,7 @@ impl AllowanceNfData {
 }
 
 /// A pool holds any number of vaults in it, one vault for each type
-/// of resource that has even been in the pool. Each pool has its own
+/// of resource that has ever been in the pool. Each pool has its own
 /// resource address for Allowance NFTs, and a set of trusted badges
 /// and badge resources.
 #[derive(ScryptoSbor)]
@@ -585,7 +585,8 @@ mod escrow {
         /// A holder of an Allowance for XRD can pull XRD from the
         /// pool to lock fees for the current transaction.
         ///
-        /// The `caller` must be a proof of the pool owner.
+        /// The `allowance` bucket must contain an Allowance for
+        /// sufficient XRD.
         ///
         /// Note that the Allowance may get burned during execution
         /// and if so will not be returned to the caller.

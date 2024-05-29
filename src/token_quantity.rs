@@ -25,7 +25,7 @@ pub enum TokenQuantity {
 }
 
 impl TokenQuantity {
-    /// Returns zero if this quantity is for zero tokens.
+    /// Returns false if this quantity is for zero tokens.
     pub fn is_zero(&self) -> bool {
         match self {
             TokenQuantity::Fungible(price) => price.is_zero(),
