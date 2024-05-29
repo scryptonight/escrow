@@ -1,7 +1,7 @@
 # Escrow - Escrow pools for the Radix DLT
 
 The Escrow component allows you to create account-like escrow pools
-that you can put funds into—or have others put funds into—and them
+that you can put funds into—or have others put funds into—and then
 retrieve them later.
 
 You can create Allowances that allow others to pull funds from your
